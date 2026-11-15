@@ -1,0 +1,19 @@
+{
+  "name": "skyforge",
+  "version": "2.0.0",
+  "description": "SKYFORGE - physically governed 6-DOF browser flight simulator",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "node tools/serve.js",
+    "test": "node --test --test-concurrency=1 tests/physics.test.js tests/ui.test.js",
+    "test:physics": "node --test tests/physics.test.js",
+    "test:ui": "node --test tests/ui.test.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
