@@ -40,6 +40,7 @@
     #apt-input { width: 132px; background: rgba(0, 38, 22, 0.92); color: var(--hud-green); border: 1px solid var(--hud-green);
       padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 10.5px; user-select: text; }
     #rwy-select { max-width: 62px; }
+    #world-select { max-width: 250px; }
     #hud-canvas { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 
     /* Tactical Glass UI Panels */
@@ -319,7 +320,7 @@
       <div class="telemetry-item"><span>LANDING GEAR:</span><span id="sys-gear">DOWN (3 GREEN)</span></div>
       <div class="telemetry-item"><span>ELEVATOR TRIM:</span><span id="sys-trim">0.0°</span></div>
       <div class="telemetry-item"><span>AIR DENSITY (ρ):</span><span id="sys-rho">1.225 kg/m³</span></div>
-      <div class="telemetry-item"><span>RWY 36 ILS DIST:</span><span id="sys-ils-d">0.0 NM</span></div>
+      <div class="telemetry-item"><span id="sys-ils-label">RWY 36 ILS DIST:</span><span id="sys-ils-d">0.0 NM</span></div>
       <div class="telemetry-item"><span>CAMERA MODE:</span><span id="sys-cam">CHASE CAM</span></div>
     </div>
     <div class="btn-group" style="margin-top: 8px;">
@@ -825,6 +826,7 @@
         this.loadScenario('runway');
         this.showLoading(null);
         document.getElementById('btn-rwy-start').innerText = `RWY ${this.rwyIdent} START`;
+        document.getElementById('sys-ils-label').innerText = `RWY ${this.rwyIdent} ILS DIST:`;
       }
 
       initThree() {
