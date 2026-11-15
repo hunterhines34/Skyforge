@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SKYFORGE // Hyper-Realistic Flight Simulator v2.0</title>
-  <script src="vendor/three.min.js"></script>
+  <script src="vendor/three.bundle.js"></script>
   <script src="vendor/simplex-noise.js"></script>
+  <script src="js/gfx-env.js"></script>
+  <script src="js/gfx-world.js"></script>
+  <script src="js/gfx-aircraft.js"></script>
+  <script src="js/earth.js"></script>
+  <script src="js/airports-data.js"></script>
   <style>
     :root {
       --hud-green: #00ff77;
@@ -22,6 +27,20 @@
       color: var(--hud-green);
     }
     #canvas-container { position: absolute; inset: 0; z-index: 1; }
+    #loading-overlay {
+      position: absolute; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; flex-direction: column;
+      background: radial-gradient(ellipse at center, #0b1622 0%, #03070e 75%); color: #fff; letter-spacing: 3px; text-align: center;
+    }
+    #loading-overlay h1 { font-size: 30px; color: var(--hud-green); margin-bottom: 14px; }
+    #loading-overlay div { font-size: 13px; color: #a8d5ba; margin: 4px 0; }
+    #map-credit {
+      position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); z-index: 9; font-size: 9.5px;
+      color: rgba(255,255,255,0.72); text-shadow: 0 0 3px #000; pointer-events: none; white-space: nowrap;
+    }
+    #apt-input { width: 132px; background: rgba(0, 38, 22, 0.92); color: var(--hud-green); border: 1px solid var(--hud-green);
+      padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 10.5px; user-select: text; }
+    #rwy-select { max-width: 62px; }
+    #world-select { max-width: 250px; }
     #hud-canvas { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 
     /* Tactical Glass UI Panels */
@@ -132,6 +151,8 @@
 
   <div id="canvas-container"></div>
   <canvas id="hud-canvas"></canvas>
+  <div id="loading-overlay"><h1>SKYFORGE</h1><div id="loading-text">LOADING WORLD</div><div id="loading-sub"></div></div>
+  <div id="map-credit"></div>
 
   <!-- Central Warning Annunciators -->
   <div id="warning-overlay">
@@ -174,8 +195,23 @@
         <option value="heavy">SF-748 Intercontinental (Heavy Jet)</option>
       </select>
     </div>
+    <div class="control-row">
+      <label>AIRPORT:</label>
+      <input id="apt-input" list="apt-list" placeholder="ICAO or name" autocomplete="off" spellcheck="false">
+      <select id="rwy-select" title="Runway"></select>
+      <button id="apt-go" onclick="sim.flyToSelectedAirport()">FLY</button>
+      <datalist id="apt-list"></datalist>
+    </div>
+    <div class="control-row">
+      <label>WORLD:</label>
+      <select id="world-select" onchange="sim.changeWorld()">
+        <option value="earth:esri">Earth - Esri satellite imagery</option>
+        <option value="earth:s2">Earth - Sentinel-2 imagery (open licence)</option>
+        <option value="island">Offline island (no network)</option>
+      </select>
+    </div>
     <div class="btn-group" style="margin-bottom: 8px;">
-      <button onclick="sim.loadScenario('runway')">RWY 36 START</button>
+      <button onclick="sim.loadScenario('runway')" id="btn-rwy-start">RWY 36 START</button>
       <button onclick="sim.loadScenario('final')">ILS FINAL</button>
       <button onclick="sim.loadScenario('crosswind')">X-WIND TEST</button>
       <button onclick="sim.loadScenario('engout')">ENG OUT GLIDE</button>
@@ -250,6 +286,7 @@
       <button onclick="sim.setWeatherPreset('xwind')">GUSTY X-WIND</button>
       <button onclick="sim.setWeatherPreset('storm')">IMC STORM</button>
       <button onclick="sim.setWeatherPreset('night')">NIGHT VFR</button>
+      <button onclick="sim.loadLiveWeather()" id="btn-livewx">LIVE WEATHER</button>
     </div>
   </div>
 
@@ -283,12 +320,13 @@
       <div class="telemetry-item"><span>LANDING GEAR:</span><span id="sys-gear">DOWN (3 GREEN)</span></div>
       <div class="telemetry-item"><span>ELEVATOR TRIM:</span><span id="sys-trim">0.0°</span></div>
       <div class="telemetry-item"><span>AIR DENSITY (ρ):</span><span id="sys-rho">1.225 kg/m³</span></div>
-      <div class="telemetry-item"><span>RWY 36 ILS DIST:</span><span id="sys-ils-d">0.0 NM</span></div>
+      <div class="telemetry-item"><span id="sys-ils-label">RWY 36 ILS DIST:</span><span id="sys-ils-d">0.0 NM</span></div>
       <div class="telemetry-item"><span>CAMERA MODE:</span><span id="sys-cam">CHASE CAM</span></div>
     </div>
     <div class="btn-group" style="margin-top: 8px;">
       <button onclick="sim.repairAircraft()">REPAIR & REFUEL</button>
       <button onclick="sim.togglePause()" id="btn-pause">PAUSE (ESC)</button>
+      <button onclick="sim.cycleQuality()" id="btn-gfx">GFX: HIGH</button>
     </div>
   </div>
 
@@ -321,7 +359,7 @@
         maxG: 4.4, minG: -1.8, vne: 84,
         gearHeight: 1.55, gearTravel: 0.30, noseGearZ: -2.2, mainGearZ: 0.3, trackWidth: 2.4, wheelRadius: 0.30,
         springK: 42000, damperC: 6800,
-        scale: [1.0, 1.0, 0.8], wingY: 0.30, wingZ: -0.3, dihedral: 0.02, sweep: 0,
+        scale: [1.0, 1.0, 0.8], wingY: 0.55, wingZ: -0.3, dihedral: 0.02, sweep: 0,
         color: 0xf4f7fa, accent: 0x0066cc, isJet: false, nacelles: 0
       },
       viper: {
@@ -365,10 +403,10 @@
     const G0 = 9.80665;
     const RHO0 = 1.225;
     const MS_TO_KT = 1.94384;
-    const AIRPORT_ELEV = 30;        // m MSL, graded airport plateau
-    const RWY_HALF_WIDTH = 27;      // Runway 36/18: 3000 m x 54 m centred on the origin
-    const RWY_HALF_LENGTH = 1500;
-    const ILS_AIM_Z = 1400;         // glideslope aiming point for RWY 36
+    let AIRPORT_ELEV = 30;          // m MSL of the active runway (graded plateau on the island)
+    let RWY_HALF_WIDTH = 27;        // the active runway is centred on the origin, heading -Z
+    let RWY_HALF_LENGTH = 1500;
+    let ILS_AIM_Z = 1200;           // glideslope aiming point (300 m in from the threshold)
 
     /***************************************************************************
      * 2. PROCEDURAL WEB AUDIO SYNTHESIS ENGINE
@@ -581,49 +619,297 @@
         this.lastFrameTime = performance.now();
         this.frameCount = 0;
 
+        // World selection: real Earth (streamed) when online, otherwise the built-in island.
+        this.cfg = this.loadConfig();
+        this.frameHeading = 0;      // true heading of the local -Z axis (deg)
+        this.rwyIdent = '36';
+        this.earth = null;
+        this.booting = true;
+
         this.initThree();
-        this.buildWorld();
+        this.buildAtmosphere();
+        this.bindInputs();
+        this.bindWorldUI();
+        if (this.cfg.world === 'earth') this.startEarth();
+        else this.startIsland();
+        this.animate();
+      }
+
+      /*************************************************************************
+       * WORLD SELECTION: real Earth or offline island
+       *************************************************************************/
+      loadConfig() {
+        const cfg = { world: 'earth', imagery: 'esri', apt: 'LOWI', rwy: '26' };
+        try { Object.assign(cfg, JSON.parse(window.localStorage.getItem('skyforge.cfg') || '{}')); } catch (e) { /* storage unavailable */ }
+        const q = new URLSearchParams(window.location.search);
+        for (const k of ['world', 'imagery', 'apt', 'rwy']) if (q.get(k)) cfg[k] = q.get(k);
+        if (cfg.world !== 'island' && (navigator.onLine === false || !window.SKYFORGE_AIRPORTS)) cfg.world = 'island';
+        return cfg;
+      }
+
+      saveConfig() {
+        try { window.localStorage.setItem('skyforge.cfg', JSON.stringify(this.cfg)); } catch (e) { /* storage unavailable */ }
+      }
+
+      // Reload with an explicit world so the choice survives where localStorage is unavailable.
+      reloadWith(cfg) {
+        Object.assign(this.cfg, cfg);
+        this.saveConfig();
+        const q = new URLSearchParams(window.location.search);
+        for (const k of ['world', 'imagery', 'apt', 'rwy']) q.set(k, this.cfg[k]);
+        window.location.search = q.toString();
+      }
+
+      findAirport(text) {
+        const list = window.SKYFORGE_AIRPORTS || [];
+        const t = String(text || '').trim().toUpperCase();
+        if (!t) return null;
+        const code = t.split(/[\s\u2014-]/)[0];
+        return list.find((a) => a[0] === code) || list.find((a) => a[1].toUpperCase() === t) || list.find((a) => a[1].toUpperCase().includes(t)) || null;
+      }
+
+      bindWorldUI() {
+        const input = document.getElementById('apt-input');
+        const dl = document.getElementById('apt-list');
+        const rw = document.getElementById('rwy-select');
+        const fillRunways = (apt, chosen) => {
+          rw.innerHTML = '';
+          if (!apt) return;
+          for (const r of apt[6]) for (const id of [r[0], r[1]]) {
+            const o = document.createElement('option');
+            o.value = o.textContent = id;
+            if (id === chosen) o.selected = true;
+            rw.appendChild(o);
+          }
+        };
+        input.addEventListener('input', () => {
+          const t = input.value.trim().toUpperCase();
+          if (t.length >= 2) {
+            const list = window.SKYFORGE_AIRPORTS || [];
+            const hits = list.filter((a) => a[0].startsWith(t)).concat(list.filter((a) => !a[0].startsWith(t) && a[1].toUpperCase().includes(t))).slice(0, 40);
+            dl.innerHTML = '';
+            for (const a of hits) { const o = document.createElement('option'); o.value = `${a[0]} \u2014 ${a[1]}`; dl.appendChild(o); }
+          }
+          fillRunways(this.findAirport(input.value));
+        });
+        input.addEventListener('keydown', (e) => { if (e.code === 'Enter') this.flyToSelectedAirport(); });
+        const apt = this.findAirport(this.cfg.apt);
+        if (apt) { input.value = `${apt[0]} \u2014 ${apt[1]}`; fillRunways(apt, this.cfg.rwy); }
+        document.getElementById('world-select').value = this.cfg.world === 'island' ? 'island' : `earth:${this.cfg.imagery}`;
+        const off = !window.SKYFORGE_AIRPORTS;
+        input.disabled = rw.disabled = document.getElementById('apt-go').disabled = off;
+      }
+
+      flyToSelectedAirport() {
+        const apt = this.findAirport(document.getElementById('apt-input').value);
+        if (!apt) return;
+        this.reloadWith({ world: 'earth', apt: apt[0], rwy: document.getElementById('rwy-select').value || apt[6][0][0] });
+      }
+
+      changeWorld() {
+        const v = document.getElementById('world-select').value;
+        if (v === 'island') this.reloadWith({ world: 'island' });
+        else this.reloadWith({ world: 'earth', imagery: v.split(':')[1] });
+      }
+
+      showLoading(text, sub) {
+        const el = document.getElementById('loading-overlay');
+        el.style.display = text ? 'flex' : 'none';
+        if (text) { document.getElementById('loading-text').innerText = text; document.getElementById('loading-sub').innerText = sub || ''; }
+      }
+
+      startIsland() {
+        this.worldMode = 'island';
+        this.cfg.world = 'island';
+        AIRPORT_ELEV = 30; RWY_HALF_WIDTH = 27; RWY_HALF_LENGTH = 1500; ILS_AIM_Z = 1200;
+        this.frameHeading = 0;
+        this.rwyIdent = '36';
+        document.getElementById('world-select').value = 'island';
+        document.getElementById('map-credit').innerText = '';
+        this.buildIslandWorld();
+        this.finishWorldSetup();
+      }
+
+      // Real Earth: put the local frame on the chosen runway and stream the world around it.
+      startEarth() {
+        const apt = this.findAirport(this.cfg.apt) || this.findAirport('LOWI');
+        let rwy = apt[6].find((r) => r[0] === this.cfg.rwy || r[1] === this.cfg.rwy) || apt[6][0];
+        const fromHigh = rwy[1] === this.cfg.rwy;           // start at the high-numbered end?
+        const A = fromHigh ? [rwy[4], rwy[5]] : [rwy[2], rwy[3]];
+        const B = fromHigh ? [rwy[2], rwy[3]] : [rwy[4], rwy[5]];
+        const D2R = Math.PI / 180;
+        const lat0 = (A[0] + B[0]) / 2, lon0 = (A[1] + B[1]) / 2;
+        const east = (B[1] - A[1]) * D2R * Math.cos(lat0 * D2R) * 6378137;
+        const north = (B[0] - A[0]) * D2R * 6378137;
+        this.worldMode = 'earth';
+        this.homeAirport = apt;
+        this.frameHeading = (Math.atan2(east, north) / D2R + 360) % 360;
+        this.rwyIdent = fromHigh ? rwy[1] : rwy[0];
+        this.rwyFarIdent = fromHigh ? rwy[0] : rwy[1];
+        RWY_HALF_LENGTH = Math.hypot(east, north) / 2;
+        RWY_HALF_WIDTH = rwy[6] / 2;
+        ILS_AIM_Z = RWY_HALF_LENGTH - Math.min(300, RWY_HALF_LENGTH * 0.3);
+        AIRPORT_ELEV = apt[4];
+
+        this.earth = new GFX.EarthWorld({
+          scene: this.scene, lat: lat0, lon: lon0, headingDeg: this.frameHeading, baseElev: apt[4],
+          imagery: this.cfg.imagery, quality: this.gfx.level, maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy()
+        });
+        this.earth.ensureElevation(0, 0);
+        this.earthBootStart = performance.now();
+        this.showLoading(`LOADING ${apt[0]} \u2014 ${apt[1].toUpperCase()}`, `RUNWAY ${this.rwyIdent} \u00B7 STREAMING TERRAIN`);
+        document.getElementById('map-credit').innerText = this.earth.credits();
+      }
+
+      // Called every frame while the Earth world is starting up.
+      pollEarthBoot() {
+        const waited = (performance.now() - this.earthBootStart) / 1000;
+        const e = this.earth;
+        e.update(new THREE.Vector3(0, AIRPORT_ELEV + 300, 400), new THREE.Vector3(0, AIRPORT_ELEV, 0), 0.016);
+        if (e.readyAt(0, 0) && (e.shown.size > 0 || waited > 25)) {
+          // Datum comes from the terrain itself so the runway sits exactly on the ground
+          let sum = 0, n = 0;
+          for (let z = -RWY_HALF_LENGTH; z <= RWY_HALF_LENGTH; z += RWY_HALF_LENGTH / 4) { sum += e.rawHeight(0, z); n++; }
+          AIRPORT_ELEV = sum / n;
+          e.baseElev = AIRPORT_ELEV;
+          const p = { x: 0, z: 0 }, q = { x: 0, z: 0 };
+          for (const r of this.homeAirport[6]) {
+            e.toLocal(r[2], r[3], p); e.toLocal(r[4], r[5], q);
+            e.addStrip(p.x, p.z, q.x, q.z, r[6], AIRPORT_ELEV);
+          }
+          this.pendingAirports = (window.SKYFORGE_AIRPORTS || []).filter((a) => a !== this.homeAirport &&
+            Math.abs(a[2] - e.lat0) < 1.2 && Math.abs(a[3] - e.lon0) < 1.2 / Math.max(0.2, e.cosLat0));
+          for (const t of e.tiles.values()) if (t.mesh && !t.queued) { t.queued = true; e.buildQueue.push(t); }
+          this.buildEarthAirport();
+          this.finishWorldSetup();
+          return;
+        }
+        if (waited > 4) document.getElementById('loading-sub').innerText = `RUNWAY ${this.rwyIdent} \u00B7 STREAMING TERRAIN (${e.loads} TILES)`;
+        if ((waited > 14 && e.loads === 0) || waited > 45) {
+          // No data: fall back to the offline island
+          console.warn('SKYFORGE: map services unreachable, using the offline island');
+          this.scene.remove(e.group);
+          this.earth = null;
+          this.startIsland();
+        }
+      }
+
+      // Other airports nearby are graded once their terrain has streamed in.
+      gradeNearbyAirports() {
+        if (!this.pendingAirports || !this.pendingAirports.length) return;
+        const e = this.earth;
+        const c = { x: 0, z: 0 }, p = { x: 0, z: 0 }, q = { x: 0, z: 0 };
+        this.pendingAirports = this.pendingAirports.filter((a) => {
+          e.toLocal(a[2], a[3], c);
+          if (Math.hypot(c.x - this.pos.x, c.z - this.pos.z) > 25000 || !e.hasHiElev(c.x, c.z)) return true;
+          for (const r of a[6]) {
+            e.toLocal(r[2], r[3], p); e.toLocal(r[4], r[5], q);
+            if (!e.hasHiElev(p.x, p.z) || !e.hasHiElev(q.x, q.z)) return true;
+          }
+          for (const r of a[6]) {
+            e.toLocal(r[2], r[3], p); e.toLocal(r[4], r[5], q);
+            e.addStrip(p.x, p.z, q.x, q.z, r[6], (e.rawHeight(p.x, p.z) + e.rawHeight(q.x, q.z)) / 2);
+          }
+          for (const t of e.tiles.values()) {            // re-mesh the terrain there
+            if (t.mesh && !t.queued && Math.hypot(t.cx - c.x, t.cz - c.z) < 4000 + t.width) { t.queued = true; e.buildQueue.push(t); }
+          }
+          return false;
+        });
+      }
+
+      finishWorldSetup() {
         this.buildAircraftMesh();
         this.buildContactPoints();
-        this.bindInputs();
+        this.applyQuality(this.gfx.level);
         this.updateEnvironment();
+        this.booting = false;
         this.loadScenario('runway');
-        this.animate();
+        this.showLoading(null);
+        document.getElementById('btn-rwy-start').innerText = `RWY ${this.rwyIdent} START`;
+        document.getElementById('sys-ils-label').innerText = `RWY ${this.rwyIdent} ILS DIST:`;
       }
 
       initThree() {
         this.scene = new THREE.Scene();
         this.scene.fog = new THREE.FogExp2(0x88bbdd, this.env.fogDensity);
 
-        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.4, 60000);
+        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 80000);
         // Logarithmic depth keeps runway paint / lights free of z-fighting at km range.
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
+        this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = 1.0;
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.info.autoReset = false;
         this.container.appendChild(this.renderer.domElement);
 
         this.hudCanvas.width = window.innerWidth;
         this.hudCanvas.height = window.innerHeight;
 
-        this.hemiLight = new THREE.HemisphereLight(0xddeeff, 0x334422, 0.65);
+        this.hemiLight = new THREE.HemisphereLight(0xddeeff, 0x3a3524, 0.5);
         this.scene.add(this.hemiLight);
 
-        this.sunLight = new THREE.DirectionalLight(0xffffff, 1.25);
+        this.sunLight = new THREE.DirectionalLight(0xffffff, 3);
         this.sunLight.castShadow = true;
-        this.sunLight.shadow.mapSize.width = 2048;
-        this.sunLight.shadow.mapSize.height = 2048;
-        const d = 120;
-        this.sunLight.shadow.camera.left = -d;
-        this.sunLight.shadow.camera.right = d;
-        this.sunLight.shadow.camera.top = d;
-        this.sunLight.shadow.camera.bottom = -d;
+        this.sunLight.shadow.mapSize.set(2048, 2048);
         this.sunLight.shadow.camera.near = 10;
         this.sunLight.shadow.camera.far = 4000;
-        this.sunDir = new THREE.Vector3(0.3, 1, 0.2).normalize();
+        this.sunLight.shadow.bias = -0.0004;
+        this.sunLight.shadow.normalBias = 0.05;
+        this.sunDir = new THREE.Vector3(0.3, 1, 0.2).normalize();    // true sun direction (sky)
+        this.lightDir = this.sunDir.clone();                          // key light: sun by day, moon by night
         this.scene.add(this.sunLight);
         this.scene.add(this.sunLight.target);
+
+        // Image-based lighting is re-baked from the sky whenever the environment changes
+        this.pmrem = new THREE.PMREMGenerator(this.renderer);
+        this.envScene = new THREE.Scene();
+        this.envDirty = true;
+        this.envTimer = 0;
+
+        // Graphics quality: software renderers start on LOW; ?gfx=low|medium|high overrides
+        const gl = this.renderer.getContext();
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        const gpu = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+        const asked = new URLSearchParams(window.location.search).get('gfx');
+        this.gfx = { level: 'high', manual: false, fpsAvg: 60, slowTime: 0 };
+        if (['low', 'medium', 'high'].includes(asked)) { this.gfx.level = asked; this.gfx.manual = true; }
+        else if (/swiftshader|llvmpipe|software/i.test(gpu)) this.gfx.level = 'low';
+      }
+
+      // Rebuilds the post-processing chain and scales scene detail for a quality level.
+      applyQuality(level) {
+        const presets = {
+          low:    { px: 1, msaa: 0, bloom: false, shadows: false, trees: 0.15, clouds: 0.45 },
+          medium: { px: 1, msaa: 0, bloom: true,  shadows: true,  trees: 0.50, clouds: 0.75 },
+          high:   { px: Math.min(window.devicePixelRatio || 1, 2), msaa: 4, bloom: true, shadows: true, trees: 1.0, clouds: 1.0 }
+        };
+        const q = presets[level];
+        this.gfx.level = level;
+        this.gfx.px = q.px;
+        this.renderer.setPixelRatio(q.px);
+        this.sunLight.castShadow = q.shadows;
+
+        const w = window.innerWidth, h = window.innerHeight;
+        if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
+        const target = new THREE.WebGLRenderTarget(w * q.px, h * q.px, { type: THREE.HalfFloatType, samples: q.msaa });
+        this.composer = new THREE.EffectComposer(this.renderer, target);
+        this.composer.addPass(new THREE.RenderPass(this.scene, this.camera));
+        if (q.bloom) this.composer.addPass(new THREE.UnrealBloomPass(new THREE.Vector2(w, h), 0.30, 0.6, 1.0));
+        this.composer.addPass(new THREE.OutputPass());
+
+        if (this.trees) this.trees.count = Math.floor(this.trees.userData.placed * q.trees);
+        if (this.earth) this.earth.setQuality(level);
+        if (this.cloudSys) this.cloudSys.clouds.forEach((c, i) => { c.visible = i < this.cloudSys.clouds.length * q.clouds; });
+        const btn = document.getElementById('btn-gfx');
+        if (btn) btn.innerText = `GFX: ${level.toUpperCase()}`;
+      }
+
+      cycleQuality() {
+        const order = ['low', 'medium', 'high'];
+        this.gfx.manual = true;
+        this.applyQuality(order[(order.indexOf(this.gfx.level) + 1) % 3]);
       }
 
       /*************************************************************************
@@ -634,8 +920,13 @@
       terrainNoise(x, z) {
         let h = this.simplex.noise2D(x * 0.0002, z * 0.0002) * 540 +
                 this.simplex.noise2D(x * 0.0008, z * 0.0008) * 115 +
-                this.simplex.noise2D(x * 0.0032, z * 0.0032) * 24 + 80;
+                this.simplex.noise2D(x * 0.0032, z * 0.0032) * 24 +
+                this.simplex.noise2D(x * 0.0058 + 9, z * 0.0058 - 4) * 9 + 80;
         if (h < 0) h *= 0.1; // shallow seabed
+
+        // The world is an island: terrain sinks into the sea toward the edge of the map
+        const edge = THREE.MathUtils.smoothstep(Math.max(Math.abs(x), Math.abs(z)), 12500, 15500);
+        h = h + (-45 - h) * edge;
 
         // Graded airport plateau around Runway 36/18 with smooth blend into terrain
         const rx = Math.abs(x);
@@ -652,6 +943,7 @@
 
       // Height of the rendered terrain surface (m MSL). Negative = seabed (sea level is y = 0).
       getTerrainHeight(x, z) {
+        if (this.earth) return this.earth.heightAt(x, z);
         const g = this.terrainGrid;
         const fx = (x + g.half) / g.cell;
         const fz = (z + g.half) / g.cell;
@@ -670,332 +962,153 @@
 
       // Solid surface the aircraft can touch: terrain, or the sea surface over water.
       getSurfaceHeight(x, z) {
+        if (this.earth) return this.earth.heightAt(x, z);
         return Math.max(0, this.getTerrainHeight(x, z));
+      }
+
+      // Open water: below sea level on the island, mapped water bodies on Earth.
+      isWaterAt(x, z, terrainHeight) {
+        if (this.earth) return this.earth.isWater(x, z);
+        return terrainHeight < 0;
       }
 
       isOnRunway(x, z) {
         return Math.abs(x) <= RWY_HALF_WIDTH && Math.abs(z) <= RWY_HALF_LENGTH;
       }
 
-      buildWorld() {
+      // Hard surfaces: runway, taxiways and apron
+      isPaved(x, z) {
+        for (const r of this.pavedAreas) if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) return true;
+        if (this.earth) {
+          for (const st of this.earth.strips) {
+            const dx = x - st.cx, dz = z - st.cz;
+            if (Math.abs(dx * st.ux + dz * st.uz) <= st.halfL && Math.abs(dx * st.uz - dz * st.ux) <= st.halfW) return true;
+          }
+        }
+        return false;
+      }
+
+      // Sky, stars, clouds, rain and particle sprites: shared by both worlds.
+      buildAtmosphere() {
+        // Sky dome, stars (both follow the camera) and a copy of the sky for image-based lighting
+        this.sky = GFX.createSky();
+        this.scene.add(this.sky);
+        const envSky = new THREE.Mesh(this.sky.geometry, this.sky.material);
+        envSky.frustumCulled = false;
+        this.envScene.add(envSky);
+        this.stars = GFX.createStars();
+        this.scene.add(this.stars);
+
+        // Clouds (drift with the steady wind), overcast deck and rain
+        this.cloudSys = GFX.createClouds(64);
+        this.cloudGroup = this.cloudSys.group;
+        this.scene.add(this.cloudGroup);
+        this.scene.add(this.cloudSys.deck);
+        this.rain = GFX.createRain(3200);
+        this.scene.add(this.rain);
+
+        // Particle sprites
+        this.fx = { smoke: GFX.puffTexture(9), glow: GFX.glowTexture() };
+      }
+
+      // Real-Earth airport: the active runway with markings, lights, PAPI and windsock.
+      buildEarthAirport() {
+        this.airport = GFX.buildAirport({ elevation: AIRPORT_ELEV, halfWidth: RWY_HALF_WIDTH, halfLength: RWY_HALF_LENGTH, aimZ: ILS_AIM_Z,
+          designators: [this.rwyIdent, this.rwyFarIdent], bare: true });
+        this.scene.add(this.airport.group);
+        this.obstacles = this.airport.obstacles;
+        this.pavedAreas = this.airport.paved;
+        this.runwayLights = this.airport.runwayLights;
+        this.papiLights = this.airport.papiLights;
+        this.windsockMesh = this.airport.windsock;
+        this.towerCamPos = this.airport.towerCamPos;
+        this.cloudGroup.position.y = AIRPORT_ELEV - 30;
+        this.cloudSys.deck.position.y = AIRPORT_ELEV + 2870;
+
+        // Animated sea surface just above mean sea level (skipped where the land itself lies below it)
+        if (AIRPORT_ELEV > 1.2) {
+          const deep = new THREE.DataTexture(new Uint8Array([255]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+          deep.needsUpdate = true;
+          this.ocean = GFX.createOcean(deep, 1e7);
+          this.ocean.position.y = 0.15;
+          this.scene.add(this.ocean);
+        }
+      }
+
+      buildIslandWorld() {
         const size = 32000;
-        const segs = 256;
+        const segs = 400;
         const row = segs + 1;
         const cell = size / segs;
         const heights = new Float32Array(row * row);
+        const depth = new Uint8Array(row * row);
         for (let iz = 0; iz < row; iz++) {
           for (let ix = 0; ix < row; ix++) {
-            heights[iz * row + ix] = this.terrainNoise(-size / 2 + ix * cell, -size / 2 + iz * cell);
+            const h = this.terrainNoise(-size / 2 + ix * cell, -size / 2 + iz * cell);
+            heights[iz * row + ix] = h;
+            depth[iz * row + ix] = Math.round(THREE.MathUtils.clamp(-h / 7, 0, 1) * 255);
           }
         }
         this.terrainGrid = { n: segs, cell, half: size / 2, h: heights };
 
         const geo = new THREE.PlaneGeometry(size, size, segs, segs);
         geo.rotateX(-Math.PI / 2);
-
         const posAttr = geo.attributes.position;
-        const colors = [];
-        const c = new THREE.Color();
-        const c2 = new THREE.Color();
-        for (let i = 0; i < posAttr.count; i++) {
-          const vy = heights[i];
-          posAttr.setY(i, vy);
-
-          if (vy <= 2.5) c.setHex(0xc2b280);
-          else if (vy < 145) c.setHex(0x2d5a27).lerp(c2.setHex(0x3f6d34), vy / 145);
-          else if (vy < 360) c.setHex(0x555d50).lerp(c2.setHex(0x6e665e), (vy - 145) / 215);
-          else c.setHex(0xf2f6fa);
-          colors.push(c.r, c.g, c.b);
-        }
-        geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        for (let i = 0; i < posAttr.count; i++) posAttr.setY(i, heights[i]);
         geo.computeVertexNormals();
-
-        const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+        const terrain = new THREE.Mesh(geo, GFX.terrainMaterial());
         terrain.receiveShadow = true;
         this.scene.add(terrain);
 
-        // Ocean Plane (sea level, y = 0)
-        const waterGeo = new THREE.PlaneGeometry(120000, 120000);
-        waterGeo.rotateX(-Math.PI / 2);
-        const water = new THREE.Mesh(waterGeo, new THREE.MeshPhongMaterial({
-          color: 0x0a3c5f, shininess: 85, specular: 0x5588aa, transparent: true, opacity: 0.92
-        }));
-        water.position.y = 0;
-        this.scene.add(water);
+        // Ocean (sea level, y = 0) with a shoreline depth map for shallows and surf
+        const depthTex = new THREE.DataTexture(depth, row, row, THREE.RedFormat, THREE.UnsignedByteType);
+        depthTex.magFilter = depthTex.minFilter = THREE.LinearFilter;
+        depthTex.needsUpdate = true;
+        this.ocean = GFX.createOcean(depthTex, size / 2);
+        this.scene.add(this.ocean);
 
         // Airport Complex (Runway 36/18: 3,000m x 54m)
-        this.obstacles = [];
-        const aptGroup = new THREE.Group();
-        const E = AIRPORT_ELEV;
+        this.airport = GFX.buildAirport({ elevation: AIRPORT_ELEV, halfWidth: RWY_HALF_WIDTH, halfLength: RWY_HALF_LENGTH, aimZ: ILS_AIM_Z });
+        this.scene.add(this.airport.group);
+        this.obstacles = this.airport.obstacles;
+        this.pavedAreas = this.airport.paved;
+        this.runwayLights = this.airport.runwayLights;
+        this.papiLights = this.airport.papiLights;
+        this.windsockMesh = this.airport.windsock;
+        this.towerCamPos = this.airport.towerCamPos;
 
-        const rwyGeo = new THREE.PlaneGeometry(RWY_HALF_WIDTH * 2, RWY_HALF_LENGTH * 2);
-        rwyGeo.rotateX(-Math.PI / 2);
-        const rwy = new THREE.Mesh(rwyGeo, new THREE.MeshLambertMaterial({ color: 0x24272c }));
-        rwy.position.y = E + 0.04;
-        rwy.receiveShadow = true;
-        aptGroup.add(rwy);
+        // Forests
+        this.trees = GFX.createTrees(16000, (x, z) => this.getTerrainHeight(x, z),
+          (x, z) => this.simplex.noise2D(x * 0.0009 + 50, z * 0.0009 + 50));
+        this.scene.add(this.trees);
 
-        // Apron + connecting taxiway in front of the hangars
-        const apronGeo = new THREE.PlaneGeometry(70, 520);
-        apronGeo.rotateX(-Math.PI / 2);
-        const apron = new THREE.Mesh(apronGeo, new THREE.MeshLambertMaterial({ color: 0x33373d }));
-        apron.position.set(62, E + 0.03, 60);
-        apron.receiveShadow = true;
-        aptGroup.add(apron);
-
-        // Centerline, threshold piano keys & aiming-point blocks
-        const paint = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const addPaint = (w, l, x, z) => {
-          const g = new THREE.PlaneGeometry(w, l);
-          g.rotateX(-Math.PI / 2);
-          const m = new THREE.Mesh(g, paint);
-          m.position.set(x, E + 0.07, z);
-          aptGroup.add(m);
-        };
-        for (let z = -1350; z <= 1350; z += 85) addPaint(1.4, 42, 0, z);
-        for (const endZ of [-1470, 1470]) {
-          for (let x = -22.5; x <= 22.5; x += 5) addPaint(2.6, 36, x, endZ);
-        }
-        for (const aimZ of [-ILS_AIM_Z + 300, ILS_AIM_Z - 300]) {
-          addPaint(8, 55, -11, aimZ);
-          addPaint(8, 55, 11, aimZ);
-        }
-
-        // Runway lighting: white edge lights, green/red thresholds, approach bar, PAPI
-        const lp = [];
-        const lc = [];
-        const addLight = (x, z, r, g, b) => { lp.push(x, E + 0.6, z); lc.push(r, g, b); };
-        for (let z = -RWY_HALF_LENGTH; z <= RWY_HALF_LENGTH; z += 60) {
-          addLight(-RWY_HALF_WIDTH - 1, z, 1, 0.95, 0.8);
-          addLight(RWY_HALF_WIDTH + 1, z, 1, 0.95, 0.8);
-        }
-        for (let x = -RWY_HALF_WIDTH; x <= RWY_HALF_WIDTH; x += 4.5) {
-          addLight(x, RWY_HALF_LENGTH + 2, 0.1, 1, 0.2);   // RWY 36 threshold (green)
-          addLight(x, -RWY_HALF_LENGTH - 2, 1, 0.1, 0.1);  // RWY 36 far end (red)
-        }
-        for (let z = RWY_HALF_LENGTH + 60; z <= RWY_HALF_LENGTH + 720; z += 60) {
-          for (let x = -6; x <= 6; x += 3) addLight(x, z, 1, 1, 1); // approach light bars
-        }
-        const lightGeo = new THREE.BufferGeometry();
-        lightGeo.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
-        lightGeo.setAttribute('color', new THREE.Float32BufferAttribute(lc, 3));
-        this.runwayLights = new THREE.Points(lightGeo, new THREE.PointsMaterial({
-          size: 4, sizeAttenuation: false, vertexColors: true, fog: false, transparent: true, opacity: 0.4
-        }));
-        aptGroup.add(this.runwayLights);
-
-        const papiGeo = new THREE.BufferGeometry();
-        const pp = [];
-        for (let i = 0; i < 4; i++) pp.push(-RWY_HALF_WIDTH - 15 - i * 9, E + 1.2, ILS_AIM_Z);
-        papiGeo.setAttribute('position', new THREE.Float32BufferAttribute(pp, 3));
-        papiGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(12).fill(1), 3));
-        this.papiLights = new THREE.Points(papiGeo, new THREE.PointsMaterial({
-          size: 6, sizeAttenuation: false, vertexColors: true, fog: false, transparent: true, opacity: 0.9
-        }));
-        aptGroup.add(this.papiLights);
-
-        // Animated Windsock near Runway Threshold
-        const pole = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.15, 0.15, 9, 8),
-          new THREE.MeshLambertMaterial({ color: 0xcccccc })
-        );
-        pole.position.set(-48, E + 4.5, 1320);
-        aptGroup.add(pole);
-
-        const sockGeo = new THREE.ConeGeometry(0.85, 4.2, 10);
-        sockGeo.rotateZ(Math.PI / 2);
-        sockGeo.translate(2.1, 0, 0);
-        this.windsockMesh = new THREE.Mesh(sockGeo, new THREE.MeshLambertMaterial({ color: 0xff5500 }));
-        this.windsockMesh.position.set(-48, E + 8.8, 1320);
-        aptGroup.add(this.windsockMesh);
-
-        // Collidable Airport Buildings (Tower & Hangars)
-        const addBuilding = (x, z, w, h, d, color) => {
-          const m = new THREE.Mesh(
-            new THREE.BoxGeometry(w, h, d),
-            new THREE.MeshLambertMaterial({ color })
-          );
-          m.position.set(x, E + h / 2, z);
-          m.castShadow = true;
-          m.receiveShadow = true;
-          aptGroup.add(m);
-          this.obstacles.push({ x, z, halfW: w / 2, halfD: d / 2, top: E + h });
-        };
-        addBuilding(135, -180, 18, 56, 18, 0x88929b); // Control Tower
-        addBuilding(140, 120, 48, 18, 65, 0x5c6bc0);  // Hangar Alpha
-        addBuilding(140, 240, 48, 18, 65, 0x455a64);  // Hangar Bravo
-        this.towerCamPos = new THREE.Vector3(120, E + 60, -180);
-
-        this.scene.add(aptGroup);
-
-        // Cloud Layer (drifts with the steady wind)
-        this.cloudGroup = new THREE.Group();
-        const cGeo = new THREE.BoxGeometry(1, 1, 1);
-        this.cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.78 });
-        for (let i = 0; i < 85; i++) {
-          const cl = new THREE.Mesh(cGeo, this.cloudMat);
-          cl.position.set(
-            (Math.random() - 0.5) * 26000,
-            1150 + Math.random() * 850,
-            (Math.random() - 0.5) * 26000
-          );
-          cl.scale.set(240 + Math.random() * 420, 45 + Math.random() * 75, 200 + Math.random() * 380);
-          this.cloudGroup.add(cl);
-        }
-        this.scene.add(this.cloudGroup);
-
-        // Shared particle geometry
-        this.particleGeo = new THREE.SphereGeometry(1, 6, 6);
       }
 
       buildAircraftMesh() {
         if (this.aircraftGroup) this.scene.remove(this.aircraftGroup);
-        this.aircraftGroup = new THREE.Group();
-
-        const spec = this.spec;
-        const [sx, sy, sz] = spec.scale;
-        const bodyMat = new THREE.MeshPhongMaterial({ color: spec.color, shininess: 75 });
-        const accentMat = new THREE.MeshPhongMaterial({ color: spec.accent, shininess: 60 });
-        const glassMat = new THREE.MeshPhongMaterial({ color: 0x112233, transparent: true, opacity: 0.65 });
-        const darkMat = new THREE.MeshLambertMaterial({ color: 0x1b1b1b });
-
-        // Fuselage group is built in model units and scaled to the real airframe size.
-        // Everything aerodynamic (wing, tail, gear) is built directly in metres.
-        const fuse = new THREE.Group();
-        const fuseGeo = new THREE.CylinderGeometry(0.65, 0.38, 8.2, 14);
-        fuseGeo.rotateX(Math.PI / 2);
-        const fuseMesh = new THREE.Mesh(fuseGeo, bodyMat);
-        fuseMesh.castShadow = true;
-        fuse.add(fuseMesh);
-
-        const noseGeo = new THREE.ConeGeometry(0.65, 2.3, 14);
-        noseGeo.rotateX(-Math.PI / 2);
-        const nose = new THREE.Mesh(noseGeo, accentMat);
-        nose.position.z = -5.25;
-        fuse.add(nose);
-
-        const canopy = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.72, 2.5), glassMat);
-        canopy.position.set(0, 0.55, -1.1);
-        if (spec.nacelles) canopy.scale.set(0.9, 0.5, 0.35), canopy.position.set(0, 0.5, -3.6);
-        fuse.add(canopy);
-
-        const vStab = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.8, 1.4), accentMat);
-        vStab.position.set(0, 0.95, 3.2);
-        vStab.castShadow = true;
-        fuse.add(vStab);
-
-        this.rudderMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.75, 0.42), bodyMat);
-        this.rudderMesh.position.set(0, 0.95, 4.05);
-        fuse.add(this.rudderMesh);
-        fuse.scale.set(sx, sy, sz);
-        this.aircraftGroup.add(fuse);
-
-        // Wings (true span / chord), with dihedral + sweep and animated ailerons
-        const half = spec.wingSpan / 2;
-        const ailGeo = new THREE.BoxGeometry(half * 0.42, 0.09, spec.chord * 0.24);
-        const makeWing = (side) => {
-          const g = new THREE.Group();
-          const panelGeo = new THREE.BoxGeometry(half, Math.max(0.12, spec.chord * 0.09), spec.chord);
-          panelGeo.translate(side * half / 2, 0, 0);
-          const panel = new THREE.Mesh(panelGeo, bodyMat);
-          panel.castShadow = true;
-          g.add(panel);
-          const ail = new THREE.Mesh(ailGeo, accentMat);
-          ail.position.set(side * half * 0.74, 0, spec.chord * 0.62);
-          g.add(ail);
-          g.position.set(0, spec.wingY, spec.wingZ);
-          g.rotation.set(0, -side * spec.sweep, side * spec.dihedral);
-          this.aircraftGroup.add(g);
-          return ail;
-        };
-        this.leftAileron = makeWing(-1);
-        this.rightAileron = makeWing(1);
-
-        // Engine nacelles (heavy jet)
-        if (spec.nacelles) {
-          const nGeo = new THREE.CylinderGeometry(1.5, 1.3, 6.5, 12);
-          nGeo.rotateX(Math.PI / 2);
-          for (const f of [-0.62, -0.36, 0.36, 0.62]) {
-            const n = new THREE.Mesh(nGeo, accentMat);
-            const span = f * half;
-            n.position.set(span, spec.wingY - 1.9 + Math.abs(span) * spec.dihedral, spec.wingZ - 2.5 + Math.abs(span) * Math.tan(spec.sweep));
-            n.castShadow = true;
-            this.aircraftGroup.add(n);
-          }
-        }
-
-        // Tail & Animated Elevator
-        const tailZ = 3.5 * sz;
-        const hSpan = spec.wingSpan * 0.36;
-        const hChord = spec.chord * 0.6;
-        const hStab = new THREE.Mesh(new THREE.BoxGeometry(hSpan, 0.1, hChord), accentMat);
-        hStab.position.set(0, 0.15 * sy, tailZ);
-        this.aircraftGroup.add(hStab);
-
-        this.elevatorMesh = new THREE.Mesh(new THREE.BoxGeometry(hSpan * 0.97, 0.08, hChord * 0.4), bodyMat);
-        this.elevatorMesh.position.set(0, 0.15 * sy, tailZ + hChord * 0.7);
-        this.aircraftGroup.add(this.elevatorMesh);
-
-        // Propeller or Jet Exhaust
-        this.propMesh = null;
-        this.abMesh = null;
-        if (!spec.isJet) {
-          this.propMesh = new THREE.Mesh(new THREE.BoxGeometry(spec.propRadius * 2, 0.18, 0.06), darkMat);
-          this.propMesh.position.set(0, 0, -6.45 * sz);
-          this.aircraftGroup.add(this.propMesh);
-        } else if (spec.afterburnerMult > 1) {
-          const abGeo = new THREE.ConeGeometry(0.5 * sx, 3.4 * sx, 10);
-          abGeo.rotateX(Math.PI / 2);
-          this.abMesh = new THREE.Mesh(abGeo, new THREE.MeshBasicMaterial({
-            color: 0xff6600, transparent: true, opacity: 0
-          }));
-          this.abMesh.position.set(0, 0, 4.1 * sz + 1.7 * sx);
-          this.aircraftGroup.add(this.abMesh);
-        }
-
-        // Tricycle Landing Gear (wheel bottoms at y = -gearHeight)
-        this.gearGroup = new THREE.Group();
-        const wr = spec.wheelRadius;
-        const strutLen = spec.gearHeight - wr;
-        const strutGeo = new THREE.CylinderGeometry(wr * 0.28, wr * 0.28, strutLen, 8);
-        const wheelGeo = new THREE.CylinderGeometry(wr, wr, wr * 0.8, 14);
-        wheelGeo.rotateZ(Math.PI / 2);
-
-        const makeStrut = (x, z) => {
-          const g = new THREE.Group();
-          const s = new THREE.Mesh(strutGeo, darkMat);
-          s.position.y = -strutLen / 2;
-          const w = new THREE.Mesh(wheelGeo, darkMat);
-          w.position.y = -strutLen;
-          g.add(s, w);
-          g.position.set(x, 0, z);
-          return g;
-        };
-        this.gearGroup.add(
-          makeStrut(0, spec.noseGearZ),
-          makeStrut(-spec.trackWidth / 2, spec.mainGearZ),
-          makeStrut(spec.trackWidth / 2, spec.mainGearZ)
-        );
-        this.aircraftGroup.add(this.gearGroup);
-
-        // Navigation lights (red left, green right, white tail) and night visibility
-        const navGeo = new THREE.SphereGeometry(Math.max(0.09, spec.wingSpan * 0.008), 8, 8);
-        const tipY = spec.wingY + half * Math.tan(spec.dihedral);
-        const tipZ = spec.wingZ + half * Math.tan(spec.sweep);
-        for (const [x, y, z, col] of [[-half, tipY, tipZ, 0xff2020], [half, tipY, tipZ, 0x20ff40], [0, 0.3 * sy, 4.3 * sz, 0xffffff]]) {
-          const n = new THREE.Mesh(navGeo, new THREE.MeshBasicMaterial({ color: col, fog: false }));
-          n.position.set(x, y, z);
-          this.aircraftGroup.add(n);
-        }
-        this.airframeMats = [bodyMat, accentMat];
-        this.applyNightLook();
+        const model = GFX.buildAircraft(this.spec, this.currentKey);
+        this.acModel = model;
+        this.aircraftGroup = model.group;
+        this.leftAileron = model.leftAileron;
+        this.rightAileron = model.rightAileron;
+        this.elevatorMesh = model.elevator;
+        this.rudderMesh = model.rudder;
+        this.propMesh = model.prop;
+        this.abMesh = model.abMesh;
+        this.gearGroup = model.gear;
         this.scene.add(this.aircraftGroup);
+
+        // Tight shadow frustum around the airframe for crisp shadows
+        const d = Math.max(28, this.spec.wingSpan * 0.9);
+        const cam = this.sunLight.shadow.camera;
+        cam.left = -d; cam.right = d; cam.top = d; cam.bottom = -d;
+        cam.updateProjectionMatrix();
+        this.applyNightLook();
       }
 
       // Faint self-illumination so the airframe stays readable in the external views at night
       applyNightLook() {
-        if (!this.airframeMats) return;
-        for (const m of this.airframeMats) m.emissive.copy(m.color).multiplyScalar(0.16 * this.env.nightFactor);
+        if (this.acModel) this.acModel.setNight(this.env.nightFactor);
       }
 
       // Ground-contact geometry in body coordinates (metres).
@@ -1219,7 +1332,7 @@
         };
 
         if (mode === 'runway') {
-          this.pos.set(0, rwyY + sp.gearHeight, 1360);
+          this.pos.set(0, rwyY + sp.gearHeight, RWY_HALF_LENGTH - Math.min(140, RWY_HALF_LENGTH * 0.2));
           this.controls.throttle = 0.0;
           this.controls.engineRpm = sp.isJet ? 0.0 : 0.08;
           this.controls.parkingBrake = true;
@@ -1236,7 +1349,7 @@
           startAirborne(this.stallSpeed(15) * 1.35, -gs, 15, true, false);
         } else if (mode === 'engout') {
           // Dead-stick: established on best glide (L/D max region), engine seized
-          this.pos.set(0, rwyY + 920, 3800);
+          this.pos.set(0, rwyY + 920, RWY_HALF_LENGTH + 2300);
           this.damage.engineFailed = true;
           const V = this.stallSpeed(0) * 1.45;
           let gamma = -0.1;
@@ -1246,7 +1359,7 @@
           this.controls.engineRpm = 0;
         } else {
           // Airborne Cruise
-          this.pos.set(0, 1524, 1000);
+          this.pos.set(0, rwyY + 1494, 1000);
           startAirborne(sp.isJet ? 145 : 55, 0, 0, false, false);
         }
 
@@ -1261,6 +1374,7 @@
        * 6. WEATHER & ENVIRONMENT UPDATES
        *************************************************************************/
       updateEnvironment() {
+        if (this.booting && !this.airport) return;
         const time = parseFloat(document.getElementById('env-time').value);
         const windKt = parseFloat(document.getElementById('env-wind').value);
         const windDir = parseFloat(document.getElementById('env-wind-dir').value);
@@ -1272,7 +1386,7 @@
 
         this.env.timeOfDay = time;
         this.env.windSpeed = windKt * 0.514444;
-        this.env.windFromRad = windDir * (Math.PI / 180);
+        this.env.windFromRad = (windDir - this.frameHeading) * (Math.PI / 180);
         this.env.turbulence = turb;
         this.env.isaTempOffset = tempOff;
         this.env.seaLevelPressure = qnh * 100;
@@ -1289,40 +1403,77 @@
         document.getElementById('val-qnh').innerText = `${qnh} hPa`;
         document.getElementById('val-fog').innerText = fog < 0.00012 ? "CAVOK" : fog < 0.00035 ? "MVFR HAZE" : "IMC FOG";
 
-        // Sun Angle & Sky Lighting
+        // Sun position, sky palette and all lighting derived from it
         const sunAng = ((time - 6) / 12) * Math.PI;
         const sunY = Math.sin(sunAng);
-        const sunX = Math.cos(sunAng);
-        this.sunDir.set(sunX, Math.max(0.05, sunY), 0.33).normalize();
-
-        const sky = new THREE.Color();
-        if (sunY > 0.22) {
-          sky.setHex(0x5c9eff).lerp(new THREE.Color(0x88ccff), sunY);
-          this.sunLight.intensity = 1.25;
-          this.hemiLight.intensity = 0.65;
-        } else if (sunY > -0.12) {
-          const t = (sunY + 0.12) / 0.34;
-          sky.setHex(0x181226).lerp(new THREE.Color(0xff7744), t);
-          this.sunLight.intensity = 0.25 + t * 0.85;
-          this.hemiLight.intensity = 0.2 + t * 0.35;
-        } else {
-          sky.setHex(0x040710);
-          this.sunLight.intensity = 0.06;
-          this.hemiLight.intensity = 0.12;
+        {
+          // East / south components rotated into the runway-aligned frame
+          const fh = this.frameHeading * Math.PI / 180, e = Math.cos(sunAng), n = -0.33;
+          this.sunDir.set(e * Math.cos(fh) - n * Math.sin(fh), sunY, -(e * Math.sin(fh) + n * Math.cos(fh))).normalize();
         }
-        // Overcast: haze / IMC greys out the sky and dims direct sunlight
-        const overcast = THREE.MathUtils.clamp((fog - 0.00012) / 0.0004, 0, 0.85);
-        const lum = 0.3 * sky.r + 0.59 * sky.g + 0.11 * sky.b;
-        sky.lerp(new THREE.Color(lum * 0.8, lum * 0.82, lum * 0.86), overcast);
-        this.sunLight.intensity *= (1 - 0.7 * overcast);
-        this.cloudMat.color.setScalar(THREE.MathUtils.clamp(0.25 + this.hemiLight.intensity * 1.2, 0.2, 1) * (1 - 0.45 * overcast));
+        const overcast = THREE.MathUtils.clamp((fog - 0.00012) / 0.0004, 0, 0.9);
+        const pal = GFX.skyPalette(this.sunDir.y, overcast);
+        this.env.nightFactor = pal.night;
+        this.env.overcast = overcast;
 
-        this.env.nightFactor = THREE.MathUtils.clamp((0.22 - sunY) / 0.34, 0, 1);
-        this.runwayLights.material.opacity = 0.35 + 0.65 * Math.max(this.env.nightFactor, overcast);
-        this.applyNightLook();
-        this.scene.background = sky;
-        this.scene.fog.color.copy(sky);
+        // Key light: the sun by day, a dim blue moon by night
+        if (this.sunDir.y > -0.02) this.lightDir.copy(this.sunDir).setY(Math.max(0.06, this.sunDir.y)).normalize();
+        else this.lightDir.set(-0.45, 0.72, -0.35).normalize();
+        this.sunLight.color.copy(pal.sunColor);
+        this.sunLight.intensity = pal.sunIntensity;
+        this.hemiLight.color.copy(pal.zenith).lerp(pal.horizon, 0.5);
+        this.hemiLight.groundColor.setRGB(0.10, 0.09, 0.06).multiplyScalar(0.3 + pal.day);
+        this.hemiLight.intensity = pal.hemiIntensity * 0.9;
+
+        const su = this.sky.material.uniforms;
+        su.uZenith.value.copy(pal.zenith);
+        su.uHorizon.value.copy(pal.horizon);
+        su.uSunDir.value.copy(this.sunDir);
+        su.uSunColor.value.copy(pal.sunColor);
+        su.uSunGlow.value = pal.day * (1 - overcast);
+        su.uDisc.value = pal.day * (1 - overcast);
+        this.stars.material.opacity = pal.stars * (1 - overcast);
+        this.scene.fog.color.copy(pal.horizon);
         this.scene.fog.density = fog;
+        this.skyState = { horizon: pal.horizon.getHex(), zenith: pal.zenith.getHex(), sunIntensity: pal.sunIntensity };
+
+        // Clouds pick up the light: white by day, warm at dusk, dark at night, grey under overcast
+        const cloudCol = new THREE.Color(1, 1, 1).lerp(pal.sunColor, 0.6 * (1 - Math.min(1, Math.abs(this.sunDir.y) * 4)))
+          .multiplyScalar((0.035 + 0.965 * pal.day) * (1 - 0.5 * overcast));
+        this.cloudSys.mats.forEach(m => m.color.copy(cloudCol));
+        this.cloudSys.deck.visible = overcast > 0.02;
+        this.cloudSys.deck.material.opacity = overcast;
+        this.cloudSys.deck.material.color.copy(pal.zenith).multiplyScalar(0.9);
+
+        if (this.earth) this.earth.setNight(pal.night);
+
+        // Ocean (island world)
+        const ou = (this.ocean || { material: { uniforms: null } }).material.uniforms || {
+          uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSunDir: { value: new THREE.Vector3() },
+          uSunColor: { value: new THREE.Color() }, uSunInt: {}, uDeep: { value: new THREE.Color() }, uShallow: { value: new THREE.Color() },
+          uFoam: { value: new THREE.Color() } };
+        const light = 0.04 + 0.96 * pal.day * (1 - 0.4 * overcast);
+        ou.uZenith.value.copy(pal.zenith);
+        ou.uHorizon.value.copy(pal.horizon);
+        ou.uSunDir.value.copy(this.lightDir);
+        ou.uSunColor.value.copy(pal.sunColor);
+        ou.uSunInt.value = pal.sunIntensity * (1 - overcast);
+        ou.uDeep.value.setRGB(0.006, 0.045, 0.095).multiplyScalar(light);
+        ou.uShallow.value.setRGB(0.030, 0.260, 0.270).multiplyScalar(light);
+        ou.uFoam.value.setRGB(0.80, 0.84, 0.86).multiplyScalar(light);
+
+        // Airport: lights come up at night and in poor visibility; a wet runway turns glossy
+        const lightsOn = Math.max(pal.night, overcast);
+        this.runwayLights.material.opacity = 0.10 + 0.90 * lightsOn;
+        this.runwayLights.material.color.setScalar(0.15 + 0.85 * lightsOn);
+        this.papiLights.material.opacity = 0.55 + 0.45 * lightsOn;
+        this.papiLights.material.color.setScalar(0.45 + 0.55 * lightsOn);
+        this.airport.setNight(pal.night);
+        this.airport.runwayMat.roughness = surf >= 1 ? 0.92 : surf > 0.4 ? 0.28 : 0.45;
+        this.airport.runwayMat.metalness = surf >= 1 ? 0 : 0.25;
+        this.rain.visible = fog >= 0.0004;
+        this.applyNightLook();
+        this.envDirty = true;
       }
 
       // Programmatic environment control (keeps the sliders as the single source of truth).
@@ -1331,6 +1482,41 @@
                       temp: 'env-temp', qnh: 'env-qnh', fog: 'env-fog', surface: 'env-surface' };
         for (const k in o) if (map[k]) document.getElementById(map[k]).value = o[k];
         this.updateEnvironment();
+      }
+
+      // Real conditions at the airport from Open-Meteo (CC BY 4.0), plus the local solar time.
+      loadLiveWeather() {
+        const btn = document.getElementById('btn-livewx');
+        const lat = this.earth ? this.earth.lat0 : 47.26, lon = this.earth ? this.earth.lon0 : 11.34;
+        btn.innerText = 'LOADING...';
+        return fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}` +
+          '&current=temperature_2m,pressure_msl,cloud_cover,visibility,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=kn')
+          .then((r) => r.json()).then((j) => {
+            const c = j.current;
+            const utc = new Date();
+            const solar = ((utc.getUTCHours() + utc.getUTCMinutes() / 60 + lon / 15) % 24 + 24) % 24;
+            const isa = 15 - 0.0065 * AIRPORT_ELEV;
+            const vis = Math.max(800, c.visibility || 30000);
+            let fog = 3 / vis;
+            if (c.cloud_cover > 85) fog = Math.max(fog, 0.00028);
+            if (c.precipitation > 0.2) fog = Math.max(fog, 0.00042);
+            this.applyWeather({
+              time: Math.round(solar * 10) / 10, wind: c.wind_speed_10m, windDir: c.wind_direction_10m,
+              turb: Math.max(0, (c.wind_gusts_10m - c.wind_speed_10m) / 3) + c.wind_speed_10m / 25,
+              temp: c.temperature_2m - isa, qnh: c.pressure_msl, fog, surface: c.precipitation > 0.1 ? '0.55' : '1.0'
+            });
+            btn.innerText = 'LIVE WEATHER';
+          }).catch(() => { btn.innerText = 'LIVE WX FAILED'; });
+      }
+
+      // Clamp arbitrary weather values onto the sliders' ranges and steps.
+      applyWeather(w) {
+        const cl = THREE.MathUtils.clamp;
+        this.setEnv({
+          time: cl(w.time, 0, 24).toFixed(1), wind: Math.round(cl(w.wind, 0, 65)), windDir: Math.round(((w.windDir % 360) + 360) % 360) % 360,
+          turb: (Math.round(cl(w.turb, 0, 10) * 2) / 2).toFixed(1), temp: Math.round(cl(w.temp, -25, 30)), qnh: Math.round(cl(w.qnh, 950, 1050)),
+          fog: cl(Math.round(w.fog / 0.00002) * 0.00002, 0.00002, 0.00075).toFixed(5), surface: w.surface
+        });
       }
 
       setWeatherPreset(preset) {
@@ -1536,7 +1722,7 @@
           rW.copy(p.r).applyQuaternion(this.quat);
           const px = this.pos.x + rW.x, py = this.pos.y + rW.y, pz = this.pos.z + rW.z;
           const terr = this.getTerrainHeight(px, pz);
-          const ground = Math.max(0, terr);
+          const ground = this.earth ? terr : Math.max(0, terr);
           const depth = ground - py;
           if (depth <= 0) continue;
 
@@ -1549,7 +1735,7 @@
           const isGear = p.type.charCodeAt(0) === 103 && p.type.length === 5; // 'gearN' | 'gearL' | 'gearR'
 
           // Catastrophic outcomes
-          if (terr < 0) {
+          if (this.isWaterAt(px, pz, terr)) {
             this.triggerCrash("Water impact: airframe broke up on ditching.");
             return;
           }
@@ -1604,7 +1790,7 @@
           contactNormal += fN;
 
           // Tangential (friction) force, limited by mu * F_N
-          const paved = this.isOnRunway(px, pz);
+          const paved = this.isPaved(px, pz);
           const muTire = paved ? 0.8 * this.env.surfaceFrictionMult : 0.55;
           const kv = 0.25 * mEffT / dt;
           fPt.set(0, fN, 0);
@@ -1659,6 +1845,11 @@
           }
         }
 
+        if (this.earth && this.pos.y - gearExt < this.earth.buildingTop(this.pos.x, this.pos.z)) {
+          this.triggerCrash("High-energy impact with a building.");
+          return;
+        }
+
         // --- 8. Integrate rigid-body equations of motion ----------------------
         // Euler's rotation equations: I w' = tau - w x (I w)
         const w = this.angVel;
@@ -1707,7 +1898,7 @@
       setTelemetry(V, ias, mach, alpha, beta, gLoad, liftMag, dragMag, thrustMag, co, kGE, inGE, stall, wheels, altAGL) {
         const deg = THREE.MathUtils.radToDeg;
         const eulerNow = new THREE.Euler().setFromQuaternion(this.quat, 'YXZ');
-        const hdg = (deg(-eulerNow.y) % 360 + 360) % 360;
+        const hdg = ((deg(-eulerNow.y) + this.frameHeading) % 360 + 360) % 360;
         const groundSpd = Math.hypot(this.vel.x, this.vel.z);
 
         // ILS Runway 36: localizer on the centreline, 3.0-deg glideslope to the aiming point
@@ -1801,6 +1992,7 @@
         dmg.forEach(n => notes.push(n));
 
         this.sound.playImpact(Math.min(0.6, sinkFpm / 1200));
+        if (gearDown && this.isPaved(this.pos.x, this.pos.z)) this.emitTyreSmoke();
 
         const onRunway = this.isOnRunway(this.pos.x, this.pos.z);
         let grade = "GREASER // BUTTER (A+)";
@@ -1910,23 +2102,38 @@
         for (let i = 0; i < 40; i++) {
           const isFire = i < 16;
           this.spawnParticle(this.pos, new THREE.Vector3((Math.random() - 0.5) * 6, 4 + Math.random() * 11, (Math.random() - 0.5) * 6),
-            (isFire ? 1.8 : 2.8) * size, isFire ? 0xff5500 : 0x222222, 0.85, 60, 0, 0.5, 0.14);
+            (isFire ? 1.8 : 2.8) * size, isFire ? new THREE.Color(5, 1.6, 0.25) : 0x1a1a1a, 0.85, isFire ? 6 : 60, 0, 0.5,
+            isFire ? 0.16 : 0.03, isFire);
         }
       }
 
-      spawnParticle(pos, vel, radius, color, opacity, life, gravity, grow, fade) {
-        const mesh = new THREE.Mesh(this.particleGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity }));
+      spawnParticle(pos, vel, radius, color, opacity, life, gravity, grow, fade, additive) {
+        const mesh = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: additive ? this.fx.glow : this.fx.smoke, color, transparent: true, opacity, depthWrite: false,
+          blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending
+        }));
         mesh.position.copy(pos);
-        mesh.scale.setScalar(radius);
+        mesh.scale.setScalar(radius * 2.4);
         this.scene.add(mesh);
-        this.particles.push({ mesh, vel, life, gravity, grow, fade });
+        this.particles.push({ mesh, vel, life, gravity, grow: grow * 2.4, fade });
       }
 
       emitSparks(x, y, z, vPt) {
         if (this.particles.length > 140) return;
         const p = new THREE.Vector3(x, y + 0.1, z);
         const v = new THREE.Vector3(vPt.x * 0.5 + (Math.random() - 0.5) * 6, 2 + Math.random() * 5, vPt.z * 0.5 + (Math.random() - 0.5) * 6);
-        this.spawnParticle(p, v, 0.12, Math.random() < 0.5 ? 0xffdd66 : 0xff8822, 1.0, 0.7, 9.81, 0, 1.2);
+        this.spawnParticle(p, v, 0.22, new THREE.Color(6, Math.random() < 0.5 ? 3.5 : 1.8, 0.5), 1.0, 0.7, 9.81, 0, 1.2, true);
+      }
+
+      // Tyre smoke where the wheels meet the runway
+      emitTyreSmoke() {
+        for (const p of this.gearPoints) {
+          const w = p.r.clone().applyQuaternion(this.quat).add(this.pos);
+          for (let i = 0; i < 3; i++) {
+            this.spawnParticle(w, new THREE.Vector3(this.vel.x * 0.15 + (Math.random() - 0.5) * 2, 0.8 + Math.random() * 1.5, this.vel.z * 0.15 + (Math.random() - 0.5) * 2),
+              0.5 * Math.max(1, this.spec.wheelRadius * 2), 0xd8d8d8, 0.5, 1.6, 0, 1.4, 0.32, false);
+          }
+        }
       }
 
       updateParticles(dt) {
@@ -2075,7 +2282,7 @@
           ctx.moveTo(cx + 150, gsY); ctx.lineTo(cx + 185, gsY);
           ctx.stroke();
           ctx.fillStyle = '#00e5ff';
-          ctx.fillText(`ILS 36  ${t.ilsDistNM.toFixed(1)} NM`, cx - 58, cy + 160);
+          ctx.fillText(`ILS ${this.rwyIdent}  ${t.ilsDistNM.toFixed(1)} NM`, cx - 58, cy + 160);
           ctx.fillStyle = '#00ff77';
           ctx.strokeStyle = '#00ff77';
           ctx.lineWidth = 1.8;
@@ -2251,19 +2458,38 @@
        *************************************************************************/
       syncVisuals(frameDt) {
         const ctl = this.controls;
+        const m = this.acModel;
+        const night = this.env.nightFactor;
         this.aircraftGroup.position.copy(this.pos);
         this.aircraftGroup.quaternion.copy(this.quat);
-        this.leftAileron.rotation.x = ctl.aileron * 0.45;
-        this.rightAileron.rotation.x = -ctl.aileron * 0.45;
-        this.elevatorMesh.rotation.x = -(ctl.elevator + ctl.trim) * 0.45;
-        this.rudderMesh.rotation.y = ctl.rudder * 0.45;
+        this.leftAileron.rotation.x = -ctl.aileron * 0.42;
+        this.rightAileron.rotation.x = ctl.aileron * 0.42;
+        this.elevatorMesh.rotation.x = -(ctl.elevator + ctl.trim) * (this.currentKey === 'viper' ? 0.30 : 0.45);
+        this.rudderMesh.rotation.y = -ctl.rudder * 0.45;
+        for (const f of m.flaps) f.rotation.x = THREE.MathUtils.degToRad(ctl.flaps) * 1.1;
 
-        if (this.propMesh && !this.damage.engineFailed && !this.paused) {
-          this.propMesh.rotation.z += (8 + ctl.engineRpm * 52) * frameDt;
+        if (this.propMesh) {
+          if (!this.damage.engineFailed && !this.paused) this.propMesh.rotation.z += (8 + ctl.engineRpm * 52) * frameDt;
+          const spin = this.damage.engineFailed ? 0 : ctl.engineRpm;
+          this.propMesh.visible = spin < 0.35;
+          m.propDisc.material.opacity = THREE.MathUtils.clamp((spin - 0.12) * 1.4, 0, 0.3);
         }
         if (this.abMesh) {
-          this.abMesh.material.opacity = ctl.engineRpm > 0.86 ? 0.6 + Math.random() * 0.3 : 0;
+          const on = ctl.engineRpm > 0.86;
+          this.abMesh.material.opacity = on ? 0.55 + Math.random() * 0.3 : 0;
+          this.abMesh.scale.z = 0.85 + Math.random() * 0.3;
         }
+
+        // Aircraft lighting: steady nav lights, double-flash strobes, rotating beacon, landing light
+        const tNow = performance.now() * 0.001;
+        const dayDim = 0.06 + 0.94 * night;
+        const strobeOn = (tNow % 1.3) < 0.06 || ((tNow + 0.16) % 1.3) < 0.06;
+        for (const l of m.navLights) l.material.opacity = dayDim;
+        for (const l of m.strobes) l.material.opacity = strobeOn ? 0.15 + 0.85 * night : 0;
+        m.beacon.material.opacity = (tNow % 1.0) < 0.12 ? 0.3 + 0.7 * night : 0.03;
+        m.landingLight.visible = ctl.gear && !this.damage.gearCollapsed;
+        m.landingLight.material.opacity = 0.05 + 0.95 * night;
+        this.airport.beaconMat.color.setScalar((tNow % 1.6) < 0.8 ? 1 : 0.15).multiply(new THREE.Color(4, 0.2, 0.2));
 
         // Windsock: points downwind, droops in light air
         const to = this.env.windFromRad + Math.PI;
@@ -2275,16 +2501,39 @@
         const thresholds = [3.5, 3.17, 2.83, 2.5];
         for (let i = 0; i < 4; i++) {
           const white = ang > thresholds[i];
-          col.setXYZ(i, 1, white ? 1 : 0.08, white ? 1 : 0.08);
+          col.setXYZ(i, 3, white ? 3 : 0.12, white ? 2.8 : 0.1);
         }
         col.needsUpdate = true;
 
-        // Clouds drift with the steady wind
         if (!this.paused) {
+          // Clouds drift with the steady wind; the sea keeps moving
           this.cloudGroup.position.x += Math.sin(to) * this.env.windSpeed * frameDt;
           this.cloudGroup.position.z += -Math.cos(to) * this.env.windSpeed * frameDt;
           if (Math.abs(this.cloudGroup.position.x) > 3000) this.cloudGroup.position.x *= -1;
           if (Math.abs(this.cloudGroup.position.z) > 3000) this.cloudGroup.position.z *= -1;
+          if (this.ocean) this.ocean.material.uniforms.uTime.value += frameDt;
+        }
+      }
+
+      // Things that are anchored to the camera, and the periodic re-bake of image-based lighting.
+      syncCameraEffects(frameDt) {
+        this.sky.position.copy(this.camera.position);
+        this.stars.position.copy(this.camera.position);
+        if (this.rain.visible) {
+          this.rain.userData.update(this.camera.position, this.env.windVec, this.paused ? 0 : frameDt);
+        }
+        this.envTimer -= frameDt;
+        if (this.envDirty && this.envTimer <= 0) {
+          this.envDirty = false;
+          this.envTimer = 0.3;
+          const disc = this.sky.material.uniforms.uDisc.value;
+          this.sky.material.uniforms.uDisc.value = 0;       // keep the sun disc out of the reflection probe
+          const rt = this.pmrem.fromScene(this.envScene, 0, 1, 5000);
+          this.sky.material.uniforms.uDisc.value = disc;
+          if (this.envTarget) this.envTarget.dispose();
+          this.envTarget = rt;
+          this.scene.environment = rt.texture;
+          this.scene.environmentIntensity = 0.75;
         }
       }
 
@@ -2332,13 +2581,15 @@
         }
 
         // Keep the shadow frustum centred on the aircraft
-        this.sunLight.position.copy(this.pos).addScaledVector(this.sunDir, 1500);
+        this.sunLight.position.copy(this.pos).addScaledVector(this.lightDir, 1500);
         this.sunLight.target.position.copy(this.pos);
         this.sunLight.target.updateMatrixWorld();
       }
 
       bindInputs() {
         window.addEventListener('keydown', (e) => {
+          if (e.target && (e.target.tagName === 'INPUT' && e.target.type === 'text')) return;
+          if (this.booting) return;
           if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.code)) {
             e.preventDefault();
           }
@@ -2402,6 +2653,8 @@
           this.camera.aspect = window.innerWidth / window.innerHeight;
           this.camera.updateProjectionMatrix();
           this.renderer.setSize(window.innerWidth, window.innerHeight);
+          this.composer.setPixelRatio(this.gfx.px);
+          this.composer.setSize(window.innerWidth, window.innerHeight);
           this.hudCanvas.width = window.innerWidth;
           this.hudCanvas.height = window.innerHeight;
         });
@@ -2412,6 +2665,7 @@
        *************************************************************************/
       // Consume one rendered frame of wall-clock time in fixed 1/120 s physics steps.
       tick(frameDt) {
+        if (this.booting) return 0;
         this.accumulator += Math.min(0.05, Math.max(0, frameDt));
         let subSteps = 0;
         while (this.accumulator >= this.FIXED_DT && subSteps < 8) {
@@ -2436,6 +2690,10 @@
         const frameDt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
         this.lastFrameTime = now;
 
+        if (this.booting) {
+          if (this.earth) this.pollEarthBoot();
+          return;
+        }
         if (!this.manualClock) this.tick(frameDt);
 
         this.frameCount++;
@@ -2448,8 +2706,23 @@
         this.sound.update(this.controls.engineRpm, this.telemetry.tas / MS_TO_KT, this.spec.isJet,
                           this.telemetry.stall, this.crashed || this.paused);
         this.updateCamera();
-        this.renderer.render(this.scene, this.camera);
+        if (this.earth) {
+          this.earth.update(this.camera.position, this.pos, frameDt);
+          if (this.frameCount % 30 === 0) this.gradeNearbyAirports();
+        }
+        this.syncCameraEffects(frameDt);
+        this.renderer.info.reset();
+        this.composer.render(frameDt);
         this.renderHUD();
+
+        // Adaptive quality: step down if the machine cannot hold a playable frame rate
+        const g = this.gfx;
+        g.fpsAvg += (1 / Math.max(0.001, frameDt) - g.fpsAvg) * 0.05;
+        g.slowTime = (g.fpsAvg < 24 && this.frameCount > 90) ? g.slowTime + frameDt : 0;
+        if (!g.manual && g.slowTime > 4 && g.level !== 'low') {
+          g.slowTime = 0;
+          this.applyQuality(g.level === 'high' ? 'medium' : 'low');
+        }
       }
     }
 

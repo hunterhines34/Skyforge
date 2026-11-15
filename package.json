@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "start": "node tools/serve.js",
-    "test": "node --test --test-concurrency=1 tests/physics.test.js tests/ui.test.js",
+    "test": "node --test --test-concurrency=1 tests/physics.test.js tests/ui.test.js tests/earth.test.js",
+    "test:earth": "node --test tests/earth.test.js",
     "test:physics": "node --test tests/physics.test.js",
     "test:ui": "node --test tests/ui.test.js"
   },

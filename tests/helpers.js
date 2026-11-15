@@ -4,7 +4,9 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { chromium } = require('playwright');
 
-const INDEX_URL = pathToFileURL(path.resolve(__dirname, '..', 'index.html')).href;
+const INDEX_FILE = pathToFileURL(path.resolve(__dirname, '..', 'index.html')).href;
+// The deterministic suites run on the built-in island world, which needs no network.
+const INDEX_URL = INDEX_FILE + '?world=island';
 
 async function launch() {
   return chromium.launch({
@@ -14,13 +16,14 @@ async function launch() {
 
 // Opens the simulator. With manual = true the page's real-time clock is detached, so
 // physics only moves when a test calls sim.advance() / sim.tick().
-async function openSim(browser, { manual = true } = {}) {
+async function openSim(browser, { manual = true, query = null, setup = null } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
-  await page.goto(INDEX_URL);
-  await page.waitForFunction(() => window.sim && window.sim.telemetry);
+  if (setup) await setup(page);
+  await page.goto(query ? `${INDEX_FILE}?${query}` : INDEX_URL);
+  await page.waitForFunction(() => window.sim && !window.sim.booting, null, { timeout: 60000 });
   await page.evaluate((manualClock) => {
     sim.manualClock = manualClock;
     const E = 30; // airport elevation, m MSL
@@ -83,4 +86,4 @@ async function openSim(browser, { manual = true } = {}) {
   return { page, errors };
 }
 
-module.exports = { launch, openSim, INDEX_URL };
+module.exports = { launch, openSim, INDEX_URL, INDEX_FILE };
