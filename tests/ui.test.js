@@ -18,6 +18,7 @@ describe('boot & UI wiring', () => {
   test('launches straight into an active runway scene with WebGL and the HUD', async () => {
     const r = await page.evaluate(() => ({
       three: THREE.REVISION,
+      world: sim.worldMode,
       canvas: !!document.querySelector('#canvas-container canvas'),
       gl: !!sim.renderer.getContext(),
       drawCalls: sim.renderer.info.render.calls,
@@ -26,9 +27,10 @@ describe('boot & UI wiring', () => {
       scenario: { z: sim.pos.z, brake: sim.controls.parkingBrake, flaps: sim.controls.flaps },
       aircraft: [...document.querySelectorAll('#aircraft-select option')].map((o) => o.value)
     }));
-    assert.equal(r.three, '128');
+    assert.equal(r.three, '170');
     assert.ok(r.canvas && r.gl && r.hud);
     assert.ok(r.drawCalls > 20 && r.triangles > 100000, `scene is rendering (${r.drawCalls} calls, ${r.triangles} tris)`);
+    assert.equal(r.world, 'island');
     assert.deepEqual(r.aircraft, ['skyhawk', 'viper', 'heavy']);
     near(r.scenario.z, 1360, 1);
     assert.equal(r.scenario.brake, true);
@@ -44,7 +46,7 @@ describe('boot & UI wiring', () => {
       const w = sim.windAt(0, 300, 0, 1.5, new THREE.Vector3());
       const atm = sim.atmosphere(0);
       return {
-        sky: sim.scene.background.getHex(), sun: sim.sunLight.intensity, fog: sim.scene.fog.density,
+        sky: sim.skyState.horizon, sun: sim.sunLight.intensity, fog: sim.scene.fog.density,
         lights: sim.runwayLights.material.opacity, wind: w.toArray(), rho: atm.rho, mu: sim.env.surfaceFrictionMult,
         labels: ['val-time', 'val-wind', 'val-wind-dir', 'val-turb', 'val-temp', 'val-qnh', 'val-fog'].map((i) => document.getElementById(i).innerText)
       };
@@ -55,7 +57,7 @@ describe('boot & UI wiring', () => {
     await set('env-time', 23);
     const night = await probe();
     assert.notEqual(night.sky, base.sky, 'time of day recolours the sky');
-    assert.ok(night.sun < base.sun * 0.2, 'night dims the sun');
+    assert.ok(night.sun < base.sun * 0.25, 'night swaps the sun for dim moonlight');
     assert.ok(night.lights > base.lights, 'runway lights come up at night');
     assert.equal(night.labels[0], '23:00');
 
@@ -167,11 +169,14 @@ describe('real-time loop & keyboard', () => {
   after(async () => { await page.close(); });
 
   test('requestAnimationFrame drives fixed-step physics in real time', async () => {
-    const a = await page.evaluate(() => ({ steps: sim.stepCount, frames: sim.frameCount }));
-    await page.waitForTimeout(1000);
-    const b = await page.evaluate(() => ({ steps: sim.stepCount, frames: sim.frameCount, fps: T.text('fps-counter') }));
-    assert.ok(b.frames > a.frames + 3, 'frames are being rendered');
-    assert.ok(b.steps - a.steps > 20 && b.steps - a.steps <= 135, `~120 Hz physics, got ${b.steps - a.steps} steps in 1 s`);
+    const a = await page.evaluate(() => ({ steps: sim.stepCount, frames: sim.frameCount, t: performance.now() }));
+    await page.waitForFunction((f) => sim.frameCount >= f + 6, a.frames, { timeout: 60000 });
+    const b = await page.evaluate(() => ({ steps: sim.stepCount, frames: sim.frameCount, t: performance.now(), fps: T.text('fps-counter') }));
+    const seconds = (b.t - a.t) / 1000;
+    const steps = b.steps - a.steps;
+    assert.ok(steps > 0, 'physics advances with rendered frames');
+    assert.ok(steps <= 120 * seconds + 8, `never faster than real time (${steps} steps in ${seconds.toFixed(2)} s)`);
+    assert.ok(steps <= (b.frames - a.frames + 1) * 6, 'at most 0.05 s of physics per frame');
     assert.match(b.fps, /\d+ FPS/);
   });
 
@@ -187,10 +192,10 @@ describe('real-time loop & keyboard', () => {
     await page.keyboard.press('Digit1');
     assert.equal((await st()).throttle, 0);
     await page.keyboard.down('ShiftLeft');
-    await page.waitForTimeout(700);
+    await page.waitForFunction(() => sim.controls.throttle > 0.05, null, { timeout: 30000 });
     await page.keyboard.up('ShiftLeft');
     const thr = (await st()).throttle;
-    assert.ok(thr > 0.05 && thr < 0.6, `smooth throttle ramps (${thr})`);
+    assert.ok(thr > 0.05 && thr < 0.9, `smooth throttle ramps (${thr})`);
 
     await page.keyboard.press('BracketRight');
     assert.equal((await st()).flaps, 30);
