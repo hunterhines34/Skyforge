@@ -53,7 +53,7 @@
       padding: 10px 13px;
       font-size: 11px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
-      max-height: 48vh; overflow-y: auto;
+      max-height: 52vh; overflow-y: auto;
     }
     #top-left-panel { top: 12px; left: 12px; width: 335px; }
     #top-right-panel { top: 12px; right: 12px; width: 315px; }
@@ -301,6 +301,10 @@
       <div><span class="key-hint">B</span> : Parking Brake | <span class="key-hint">HOME / END</span> : Pitch Trim | <span class="key-hint">C</span> : Camera</div>
       <div><span class="key-hint">MOUSE DRAG</span> : Look Around | <span class="key-hint">SCROLL</span> : Zoom FOV</div>
       <div><span class="key-hint">P</span> : Autopilot (ALT + HDG hold) | <span class="key-hint">R</span> : Reset | <span class="key-hint">ESC</span> : Pause</div>
+      <div style="margin-top:5px; border-top:1px solid var(--panel-border); padding-top:4px;"><span class="key-hint">XBOX CONTROLLER</span> : <span id="pad-status" style="color:#84a996">NOT DETECTED (PRESS ANY BUTTON)</span></div>
+      <div><span class="key-hint">L-STICK</span> : Pitch / Roll | <span class="key-hint">LT / RT</span> : Rudder | <span class="key-hint">LB / RB</span> : Throttle - / +</div>
+      <div><span class="key-hint">A</span> : Brakes | <span class="key-hint">B</span> : Park Brake | <span class="key-hint">X</span> : Gear | <span class="key-hint">Y</span> : Camera | <span class="key-hint">R-STICK</span> : Look</div>
+      <div><span class="key-hint">D-PAD \u2195</span> : Trim | <span class="key-hint">D-PAD \u2194</span> : Flaps | <span class="key-hint">MENU</span> : Pause | <span class="key-hint">VIEW</span> : Reset | <span class="key-hint">L3</span> : Autopilot</div>
     </div>
     <div class="btn-group">
       <button onclick="sim.cycleCamera()">CAM VIEW (C)</button>
@@ -580,6 +584,8 @@
         };
         // Optional analog overrides (-1..1) for scripted pilots / future gamepads. null = keyboard.
         this.input = { pitch: null, roll: null, yaw: null };
+        // Gamepad state (Xbox / standard-mapping controllers), refreshed once per rendered frame
+        this.pad = { connected: false, id: '', pitch: 0, roll: 0, yaw: 0, throttleRate: 0, brake: false, prev: [], lookX: 0, lookY: 0 };
         this.ap = { altTarget: 0, hdgTarget: 0, thetaInt: 0 };
 
         // Stateful Airframe Component Damage
@@ -1562,17 +1568,19 @@
 
         // --- 1. Pilot inputs ------------------------------------------------
         // Stick convention: S / Down = pull (pitch up), W / Up = push. A = roll left, Q = yaw left.
+        const pad = this.pad;
         let pitchCmd = this.input.pitch !== null ? this.input.pitch
-          : (k['KeyS'] || k['ArrowDown'] ? 1 : 0) - (k['KeyW'] || k['ArrowUp'] ? 1 : 0);
+          : clamp((k['KeyS'] || k['ArrowDown'] ? 1 : 0) - (k['KeyW'] || k['ArrowUp'] ? 1 : 0) + pad.pitch, -1, 1);
         let rollCmd = this.input.roll !== null ? this.input.roll
-          : (k['KeyA'] || k['ArrowLeft'] ? 1 : 0) - (k['KeyD'] || k['ArrowRight'] ? 1 : 0);
+          : clamp((k['KeyA'] || k['ArrowLeft'] ? 1 : 0) - (k['KeyD'] || k['ArrowRight'] ? 1 : 0) + pad.roll, -1, 1);
         let yawCmd = this.input.yaw !== null ? this.input.yaw
-          : (k['KeyQ'] ? 1 : 0) - (k['KeyE'] ? 1 : 0);
+          : clamp((k['KeyQ'] ? 1 : 0) - (k['KeyE'] ? 1 : 0) + pad.yaw, -1, 1);
         const pilotActive = pitchCmd !== 0 || rollCmd !== 0;
 
         if (k['ShiftLeft'] || k['ShiftRight']) ctl.throttle = Math.min(1.0, ctl.throttle + 0.4 * dt);
         if (k['ControlLeft'] || k['ControlRight']) ctl.throttle = Math.max(0.0, ctl.throttle - 0.4 * dt);
-        ctl.wheelBrakes = !!k['Space'];
+        if (pad.throttleRate !== 0) ctl.throttle = clamp(ctl.throttle + pad.throttleRate * 0.5 * dt, 0, 1);
+        ctl.wheelBrakes = !!k['Space'] || pad.brake;
 
         // Engine spool lag & fuel burn
         const targetRpm = (this.damage.engineFailed || this.fuelMass <= 0) ? 0 : ctl.throttle;
@@ -1992,6 +2000,7 @@
         dmg.forEach(n => notes.push(n));
 
         this.sound.playImpact(Math.min(0.6, sinkFpm / 1200));
+        this.rumble(0.25 + sinkFpm / 900, 220);
         if (gearDown && this.isPaved(this.pos.x, this.pos.z)) this.emitTyreSmoke();
 
         const onRunway = this.isOnRunway(this.pos.x, this.pos.z);
@@ -2061,6 +2070,7 @@
       triggerCrash(reason) {
         this.crashed = true;
         this.crashReason = reason;
+        this.rumble(1, 900);
         this.aircraftGroup.visible = false;
         this.sound.playImpact(0.6);
 
@@ -2586,6 +2596,101 @@
         this.sunLight.target.updateMatrixWorld();
       }
 
+      /*************************************************************************
+       * GAMEPAD (Xbox / "standard" mapping)
+       *   Left stick   pitch / roll            Right stick  look around (click: recentre)
+       *   LT / RT      rudder left / right     LB / RB      throttle down / up
+       *   A            wheel brakes (hold)     B            parking brake
+       *   X            landing gear            Y            camera
+       *   D-pad U/D    trim nose down / up     D-pad L/R    flaps up / down
+       *   Menu         pause                   View         reset to runway
+       *   L-stick click autopilot
+       *************************************************************************/
+      pollGamepad(frameDt) {
+        const pad = this.pad;
+        let gp = null;
+        const list = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (const g of list) {
+          if (g && g.connected && g.buttons.length >= 10 && (!gp || g.mapping === 'standard')) { gp = g; if (g.mapping === 'standard') break; }
+        }
+        if (!gp) {
+          if (pad.connected) {
+            Object.assign(pad, { connected: false, id: '', pitch: 0, roll: 0, yaw: 0, throttleRate: 0, brake: false, prev: [] });
+            this.updateGamepadUI();
+          }
+          return;
+        }
+        if (!pad.connected || pad.id !== gp.id) {
+          pad.connected = true;
+          pad.id = gp.id;
+          pad.prev = gp.buttons.map((b) => b.pressed);   // ignore buttons already held when the pad appears
+          this.updateGamepadUI();
+        }
+        this.padDevice = gp;
+
+        // Sticks: dead zone, then a soft curve so small deflections stay precise
+        const axis = (i) => {
+          const v = gp.axes[i] || 0, a = Math.abs(v), dz = 0.12;
+          if (a < dz) return 0;
+          const n = Math.min(1, (a - dz) / (1 - dz));
+          return Math.sign(v) * (0.45 * n + 0.55 * n * n);
+        };
+        const btn = (i) => (gp.buttons[i] ? gp.buttons[i].value || (gp.buttons[i].pressed ? 1 : 0) : 0);
+        pad.roll = -axis(0) || 0;            // stick right = roll right
+        pad.pitch = axis(1);                 // stick back = pull
+        pad.yaw = btn(6) - btn(7);           // LT = yaw left, RT = yaw right
+        pad.throttleRate = (btn(5) > 0.5 ? 1 : 0) - (btn(4) > 0.5 ? 1 : 0);
+        pad.brake = btn(0) > 0.5;
+
+        // Right stick looks around
+        pad.lookX = axis(2);
+        pad.lookY = axis(3);
+        if (pad.lookX || pad.lookY) {
+          this.camYaw -= pad.lookX * 2.2 * frameDt;
+          this.camPitch = THREE.MathUtils.clamp(this.camPitch - pad.lookY * 1.6 * frameDt, -1.2, 1.2);
+        }
+
+        // Edge-triggered buttons
+        const hit = (i) => { const now = !!(gp.buttons[i] && gp.buttons[i].pressed), was = !!pad.prev[i]; pad.prev[i] = now; return now && !was; };
+        if (hit(9)) this.togglePause();
+        if (hit(8)) this.loadScenario('runway');
+        if (hit(3)) this.cycleCamera();
+        if (hit(11)) { this.camYaw = 0; this.camPitch = 0; }
+        if (!this.paused && !this.crashed) {
+          if (hit(1)) { this.controls.parkingBrake = !this.controls.parkingBrake; this.updateSystemsUI(); }
+          if (hit(2)) this.toggleGear();
+          if (hit(10)) this.toggleAutopilot();
+          if (hit(14)) this.setFlaps(this.controls.flaps - 15);
+          if (hit(15)) this.setFlaps(this.controls.flaps + 15);
+          if (hit(12)) this.adjustTrim(-0.01);
+          if (hit(13)) this.adjustTrim(0.01);
+        } else {
+          for (const i of [1, 2, 10, 12, 13, 14, 15]) hit(i);
+        }
+      }
+
+      adjustTrim(delta) {
+        this.controls.trim = THREE.MathUtils.clamp(this.controls.trim + delta, -0.6, 0.6);
+        this.updateSystemsUI();
+      }
+
+      updateGamepadUI() {
+        const el = document.getElementById('pad-status');
+        if (!el) return;
+        const name = this.pad.id.replace(/\s*\(.*$/, '').slice(0, 34);
+        el.innerText = this.pad.connected ? `CONNECTED \u2014 ${name || 'CONTROLLER'}` : 'NOT DETECTED (PRESS ANY BUTTON)';
+        el.style.color = this.pad.connected ? 'var(--hud-green)' : '#84a996';
+      }
+
+      // Controller rumble for touchdowns, damage and crashes (ignored where unsupported).
+      rumble(strength, ms) {
+        const gp = this.padDevice;
+        if (!this.pad.connected || !gp || !gp.vibrationActuator || !gp.vibrationActuator.playEffect) return;
+        try {
+          gp.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: Math.min(1, strength), weakMagnitude: Math.min(1, strength * 0.6) });
+        } catch (e) { /* unsupported */ }
+      }
+
       bindInputs() {
         window.addEventListener('keydown', (e) => {
           if (e.target && (e.target.tagName === 'INPUT' && e.target.type === 'text')) return;
@@ -2618,11 +2723,9 @@
           } else if (e.code === 'Escape') {
             this.togglePause();
           } else if (e.code === 'Home' || e.code === 'PageUp') {
-            this.controls.trim = Math.min(0.6, this.controls.trim + 0.01);
-            this.updateSystemsUI();
+            this.adjustTrim(0.01);
           } else if (e.code === 'End' || e.code === 'PageDown') {
-            this.controls.trim = Math.max(-0.6, this.controls.trim - 0.01);
-            this.updateSystemsUI();
+            this.adjustTrim(-0.01);
           }
         });
 
@@ -2630,6 +2733,8 @@
           this.keys[e.code] = false;
         });
         window.addEventListener('blur', () => { this.keys = {}; });
+        window.addEventListener('gamepadconnected', () => this.pollGamepad(0));
+        window.addEventListener('gamepaddisconnected', () => this.pollGamepad(0));
 
         // Buttons must not keep focus, otherwise SPACE (wheel brakes) re-triggers them
         document.addEventListener('click', (e) => {
@@ -2694,6 +2799,7 @@
           if (this.earth) this.pollEarthBoot();
           return;
         }
+        this.pollGamepad(frameDt);
         if (!this.manualClock) this.tick(frameDt);
 
         this.frameCount++;

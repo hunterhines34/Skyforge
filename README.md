@@ -67,7 +67,7 @@ CI runs the same suite on every push and pull request (`.github/workflows/test.y
 | File | What it covers |
 | --- | --- |
 | `tests/physics.test.js` | The blueprint's 15-point QA matrix (tests `01`-`15` map one-to-one), the anti-shortcut guardrails (no kinematic cheating, no energy gain, NaN fuzzing), and takeoff / cruise / autopilot / ILS for each airframe |
-| `tests/ui.test.js` | Page boot, every slider and button, warning annunciators, audio, keyboard and mouse through the real `requestAnimationFrame` loop |
+| `tests/ui.test.js` | Page boot, every slider and button, warning annunciators, audio, a virtual Xbox controller, keyboard and mouse through the real `requestAnimationFrame` loop |
 | `tests/earth.test.js` | Earth world: runway frame and datum, runway grading, render/physics height agreement, projection, take-off, building and water collisions, live weather, airport picker, offline fallback |
 | `tests/helpers.js` | Harness and the in-page `T` helpers (`T.place`, `T.until`, `T.state`, ...) |
 
@@ -103,6 +103,30 @@ The same hooks work from the browser console while playing.
 | `R`, `Esc` | Reset to runway, pause |
 
 Mouse drag looks around; scroll zooms.
+
+### Xbox controller
+
+Plug in (or pair) the controller and press any button; the controls panel shows it as connected.
+Any controller the browser reports with the standard layout works the same way, and it can be
+used together with the keyboard.
+
+| Control | Action |
+| --- | --- |
+| Left stick | Pitch and roll |
+| LT / RT | Rudder left / right (analog), nosewheel steering |
+| LB / RB | Throttle down / up (hold) |
+| A | Wheel brakes (hold) |
+| B | Parking brake |
+| X | Landing gear |
+| Y | Camera |
+| Right stick | Look around (click to recentre) |
+| D-pad up / down | Trim nose down / up |
+| D-pad left / right | Flaps up / down |
+| Left stick click | Autopilot |
+| Menu | Pause |
+| View | Reset to runway |
+
+The controller rumbles on touchdown and on a crash where the browser supports it.
 
 ## How it works
 
