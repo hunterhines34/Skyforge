@@ -134,6 +134,130 @@ describe('boot & UI wiring', () => {
     await page.evaluate(() => { while (sim.cameraMode !== 0) sim.cycleCamera(); });
   });
 
+  test('Xbox controller: sticks, triggers and buttons fly the aircraft', async () => {
+    const r = await page.evaluate(() => {
+      // A virtual standard-mapping pad, as the browser reports an Xbox controller
+      const mk = () => ({ id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)', index: 0, connected: true, mapping: 'standard',
+        axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })), rumbles: 0,
+        vibrationActuator: { playEffect() { pad.rumbles++; return Promise.resolve('complete'); } } });
+      let pad = null;
+      Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => [pad, null, null, null] });
+      const press = (i, v = 1) => { pad.buttons[i] = { pressed: v > 0.5, value: v }; };
+      const release = (i) => { pad.buttons[i] = { pressed: false, value: 0 }; };
+      const tap = (i) => { press(i); sim.pollGamepad(0.016); release(i); sim.pollGamepad(0.016); };
+      const out = {};
+
+      T.reset('skyhawk');
+      sim.pollGamepad(0.016);
+      out.before = { connected: sim.pad.connected, status: T.text('pad-status') };
+      pad = mk();
+      sim.pollGamepad(0.016);
+      out.after = { connected: sim.pad.connected, status: T.text('pad-status') };
+
+      // Dead zone, then stick -> surfaces through the physics step
+      pad.axes = [0.08, -0.06, 0, 0];
+      sim.pollGamepad(0.016);
+      out.deadzone = [sim.pad.roll, sim.pad.pitch];
+      sim.loadScenario('cruise');
+      pad.axes = [1, 1, 0, 0];            // stick right and back
+      press(7, 0.75);                     // RT: right rudder
+      sim.pollGamepad(0.016);
+      sim.advance(0.6);
+      out.surfaces = { elevator: sim.controls.elevator, aileron: sim.controls.aileron, rudder: sim.controls.rudder, roll: sim.telemetry.rollDeg };
+      pad.axes = [0, 0, 0, 0];
+      release(7);
+
+      // Throttle on the bumpers
+      sim.loadScenario('runway');
+      sim.controls.throttle = 0.2;
+      press(5); sim.pollGamepad(0.016); sim.advance(1); release(5);
+      out.throttleUp = sim.controls.throttle;
+      press(4); sim.pollGamepad(0.016); sim.advance(0.5); release(4);
+      sim.pollGamepad(0.016);
+      out.throttleDown = sim.controls.throttle;
+      sim.advance(0.5);
+      out.throttleHeld = sim.controls.throttle;
+
+      // Buttons
+      sim.controls.throttle = 0;
+      tap(1); out.parkOff = sim.controls.parkingBrake;
+      tap(1); out.parkOn = sim.controls.parkingBrake;
+      press(0); sim.pollGamepad(0.016); sim.advance(0.1); out.brakeHeld = sim.controls.wheelBrakes;
+      release(0); sim.pollGamepad(0.016); sim.advance(0.1); out.brakeReleased = sim.controls.wheelBrakes;
+      const flaps0 = sim.controls.flaps;
+      tap(15); out.flapsDown = sim.controls.flaps - flaps0;
+      tap(14); tap(14); out.flapsUp = sim.controls.flaps;
+      const trim0 = sim.controls.trim;
+      tap(13); out.trimUp = sim.controls.trim - trim0;
+      tap(12); tap(12); out.trimDown = sim.controls.trim - trim0;
+      tap(2); out.gearOnGround = sim.controls.gear;
+      const cam0 = sim.cameraMode;
+      tap(3); out.camera = sim.cameraMode - cam0;
+      while (sim.cameraMode !== 0) sim.cycleCamera();
+      tap(10); out.autopilot = sim.controls.autopilot;
+      tap(10);
+      tap(9); out.paused = sim.paused;
+      tap(1); out.parkWhilePaused = sim.controls.parkingBrake;
+      tap(9); out.resumed = sim.paused;
+
+      // Gear works in the air; right stick looks around; View resets
+      sim.loadScenario('cruise');
+      sim.advance(0.1);
+      tap(2); out.gearInFlight = sim.controls.gear;
+      pad.axes = [0, 0, 1, 0];
+      sim.pollGamepad(0.1);
+      out.look = sim.camYaw;
+      pad.axes = [0, 0, 0, 0];
+      tap(11); out.lookReset = sim.camYaw;
+      tap(8); out.reset = { z: sim.pos.z, brake: sim.controls.parkingBrake };
+
+      // Rumble on a hard touchdown; unplugging zeroes the inputs
+      T.place({ z: 900, h: 0.03, vz: -30, vy: -3, pitch: 3, flaps: 15 });
+      sim.pollGamepad(0.016);
+      T.until(() => sim.lastTouchdown !== null, 3);
+      out.rumbles = pad.rumbles;
+      pad.axes = [1, 1, 0, 0];
+      sim.pollGamepad(0.016);
+      pad = null;
+      sim.pollGamepad(0.016);
+      out.unplugged = { connected: sim.pad.connected, pitch: sim.pad.pitch, roll: sim.pad.roll, status: T.text('pad-status') };
+      return out;
+    });
+    assert.equal(r.before.connected, false);
+    assert.match(r.before.status, /NOT DETECTED/);
+    assert.equal(r.after.connected, true);
+    assert.match(r.after.status, /CONNECTED.*Xbox Wireless Controller/);
+    assert.deepEqual(r.deadzone, [0, 0], 'stick noise inside the dead zone is ignored');
+    assert.ok(r.surfaces.elevator > 0.5, `stick back pulls (${r.surfaces.elevator})`);
+    assert.ok(r.surfaces.aileron < -0.5, `stick right rolls right (${r.surfaces.aileron})`);
+    assert.ok(r.surfaces.rudder < -0.3 && r.surfaces.rudder > -0.9, `RT is analog right rudder (${r.surfaces.rudder})`);
+    assert.ok(r.surfaces.roll > 5, `aircraft banks right (${r.surfaces.roll} deg)`);
+    near(r.throttleUp, 0.7, 0.02, 'RB advances the throttle smoothly');
+    near(r.throttleDown, 0.45, 0.02, 'LB retards the throttle');
+    near(r.throttleHeld, r.throttleDown, 1e-9, 'throttle holds when the bumpers are released');
+    assert.equal(r.parkOff, false);
+    assert.equal(r.parkOn, true);
+    assert.equal(r.brakeHeld, true);
+    assert.equal(r.brakeReleased, false);
+    assert.equal(r.flapsDown, 15);
+    assert.equal(r.flapsUp, 0);
+    near(r.trimUp, 0.01, 1e-9);
+    near(r.trimDown, -0.01, 1e-9);
+    assert.equal(r.gearOnGround, true, 'gear lever stays locked on the ground');
+    assert.equal(r.camera, 1);
+    assert.equal(r.autopilot, true);
+    assert.equal(r.paused, true);
+    assert.equal(r.parkWhilePaused, true, 'flight buttons are ignored while paused');
+    assert.equal(r.resumed, false);
+    assert.equal(r.gearInFlight, true, 'X lowers the gear in flight');
+    assert.ok(r.look < -0.1, 'right stick pans the camera');
+    assert.equal(r.lookReset, 0);
+    assert.equal(r.reset.brake, true);
+    assert.ok(r.rumbles >= 1, 'touchdown triggers controller rumble');
+    assert.deepEqual({ ...r.unplugged, status: undefined }, { connected: false, pitch: 0, roll: 0, status: undefined });
+    assert.match(r.unplugged.status, /NOT DETECTED/);
+  });
+
   test('audio engine starts on demand and tracks the engine', async () => {
     await page.click('#btn-audio');
     const r = await page.evaluate(() => ({ label: T.text('btn-audio'), state: sim.sound.ctx && sim.sound.ctx.state, enabled: sim.sound.enabled }));
